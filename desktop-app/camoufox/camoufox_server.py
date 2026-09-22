@@ -35,6 +35,7 @@ import re
 import sys
 import time
 import shutil
+import subprocess
 from contextlib import contextmanager
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1276,9 +1277,13 @@ def chat_greeting(job_id: str, greeting: str, os_name: str | None = None,
 
         # Step 4-5: 健壮进入沟通页面（点击按钮/重点「继续沟通」/ app.zhipin 交接 / 弹窗确认），取回聊天输入框
         target_page, input_el = _enter_chat(page)
-        if input_el is None:
+        # 修复：_enter_chat 失败时返回 (None, error_dict)，input_el 是 dict 而非 None。
+        # 旧代码只判 input_el is None，漏检后把 dict 当元素句柄 .click()，崩出
+        # "'dict' object has no attribute 'click'"。此处必须按 target_page 判失败，
+        # 并对 dict 做双保险。
+        if target_page is None or input_el is None or isinstance(input_el, dict):
             save_cookies(page.context)
-            err = target_page or {}
+            err = input_el if isinstance(input_el, dict) else {}
             return {"ok": False, "code": err.get('code', 500), "sent": False,
                     "message": err.get('message', '沟通窗口未打开'),
                     "external": bool(err.get('external'))}
@@ -1630,6 +1635,64 @@ PLATFORM_AUTH_COOKIE_HINTS = {
 }
 
 
+def ensure_python_deps() -> None:
+    """确保运行时 Python 依赖（camoufox/playwright）可用。
+
+    BossClaw「带内核版」已内置 Camoufox 内核二进制，但内核的 Python 驱动
+    （camoufox/playwright 包，含 numpy/lxml/orjson/greenlet 等 C 扩展）仍依赖
+    pip 安装。这里在首次启动时自动装到 ~/.bossclaw/site-packages，实现
+    「下载 AppImage → 双击 → 直接用」，无需手动 pip install。
+
+    优先级：系统/user 已装 → 自举目录已装 → pip --target 安装。
+    """
+    import importlib.util
+
+    def _has_pkg(name: str) -> bool:
+        # 排除命名空间包（spec.origin 为 None）——例如 HOME 下恰好有同名空目录
+        spec = importlib.util.find_spec(name)
+        return spec is not None and spec.origin is not None
+
+    if _has_pkg('camoufox') and _has_pkg('playwright'):
+        return
+    target = Path.home() / '.bossclaw' / 'site-packages'
+    # 已自举过：直接挂进 sys.path
+    if (target / 'camoufox').is_dir() and (target / 'playwright').is_dir():
+        sys.path.insert(0, str(target))
+        if _has_pkg('camoufox'):
+            return
+    req = Path(__file__).resolve().parent / 'requirements.txt'
+    if not req.is_file():
+        log('⚠️', '未找到 requirements.txt，跳过依赖自举')
+        return
+    log('📥', '首次运行：正在安装隐身引擎 Python 依赖（camoufox + playwright）…')
+    # 依次尝试国内镜像（默认 PyPI 直连 files.pythonhosted.org 常超时）
+    indexes = [
+        'https://mirrors.aliyun.com/pypi/simple/',
+        'https://pypi.tuna.tsinghua.edu.cn/simple',
+        '',
+    ]
+    installed = False
+    last_err = ''
+    try:
+        for idx in indexes:
+            cmd = [sys.executable, '-m', 'pip', 'install', '--target', str(target),
+                   '--timeout', '60', '-r', str(req)]
+            if idx:
+                cmd += ['-i', idx]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            if r.returncode == 0:
+                installed = True
+                break
+            last_err = r.stderr.strip()[-160:]
+        if installed:
+            sys.path.insert(0, str(target))
+            log('✅', '依赖安装完成，隐身引擎可用')
+        else:
+            log('⚠️', f'依赖安装失败：{last_err}')
+    except Exception as e:
+        log('⚠️', f'依赖安装异常：{str(e)[:200]}')
+
+
 def engine_status(platform: str = 'boss') -> dict:
     """检测隐身引擎可用性（不启动浏览器）：内核检测 + 指定平台 Cookie 状态。"""
     import importlib.util
@@ -1696,6 +1759,9 @@ def main():
     parser.add_argument('--port', type=int, default=18767)
     parser.add_argument('--token', default='bossclaw-camoufox')
     args = parser.parse_args()
+
+    # 首次运行自举：确保 Python 依赖（camoufox/playwright）可用
+    ensure_python_deps()
 
     # 启动前先检测引擎可用性（内核 + Cookie）
     status = engine_status()

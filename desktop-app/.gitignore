@@ -48,3 +48,10 @@ coverage/
 
 # ===== 临时诊断 / 复现脚本（分析后清理，不入库）=====
 scripts/tmp-*
+
+# ===== 内置内核二进制（各 ~1G，构建产物，不入库）=====
+camoufox-kernel/
+camoufox-kernel-win/
+
+# ===== 临时打包脚本 =====
+repack.sh

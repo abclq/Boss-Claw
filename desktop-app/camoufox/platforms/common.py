@@ -147,8 +147,43 @@ def clear_cookies(platform: str = 'boss') -> bool:
 # ============================================================
 # 内核检测与浏览器启动（仅 Camoufox 原生隐身内核）
 # ============================================================
+def bundled_kernel_path() -> "Path | None":
+    """定位打包内置的 Camoufox 内核。
+
+    按当前平台找对应可执行文件：
+      win32: camoufox.exe，Linux/macOS: camoufox-bin
+    两个候选根目录（camoufox-kernel 与 camoufox-kernel-win）都探测。
+
+    dev 与 packaged 目录深度不同，各给两个候选：
+      dev:       <repo>/desktop-app/<kernel-dir>/        （本文件深 3 层）
+      packaged:  <app>/resources/<kernel-dir>/            （本文件深 4 层）
+    """
+    try:
+        exe_name = "camoufox.exe" if sys.platform == "win32" else "camoufox-bin"
+        here = Path(__file__).resolve()
+        for root in (
+            here.parent.parent.parent / "camoufox-kernel",
+            here.parent.parent.parent.parent / "camoufox-kernel",
+            here.parent.parent.parent / "camoufox-kernel-win",
+            here.parent.parent.parent.parent / "camoufox-kernel-win",
+        ):
+            if not root.is_dir():
+                continue
+            for exe in sorted(root.glob(f"official/*/{exe_name}"), reverse=True):
+                if exe.is_file():
+                    return exe
+    except Exception:
+        pass
+    return None
+
+
 def detect_kernel(force: bool = False) -> dict:
-    """检测可用的隐身内核。仅 Camoufox 原生内核可用；系统浏览器不参与回退。"""
+    """检测可用的隐身内核。仅 Camoufox 原生内核可用；系统浏览器不参与回退。
+
+    优先 camoufox 包自带内核（~/.cache/camoufox，用户 fetch 过的）；
+    缺失时回退到打包内置内核（camoufox-kernel/），由 open_browser 以
+    executable_path 直接拉起，免去用户手动 `camoufox fetch` 下载 663MB。
+    """
     global _KERNEL_CACHE
     if _KERNEL_CACHE and not force:
         return _KERNEL_CACHE
@@ -163,6 +198,13 @@ def detect_kernel(force: bool = False) -> dict:
             return _KERNEL_CACHE
     except Exception:
         pass
+    bundled = bundled_kernel_path()
+    if bundled is not None:
+        _KERNEL_CACHE = {
+            "kind": "camoufox", "path": str(bundled), "camoufox": True, "bundled": True,
+            "message": f"Camoufox 隐身引擎内核（内置 {bundled.parent.name}）",
+        }
+        return _KERNEL_CACHE
     _KERNEL_CACHE = {
         "kind": "none", "path": None, "camoufox": False,
         "message": "隐身引擎未就绪：暂未下载 Camoufox 内核，请安装 Camoufox 原生内核：pip install \"camoufox[geoip]\" && camoufox fetch",
@@ -186,6 +228,9 @@ def open_browser(os_name: str | None = None, headless: bool = False):
         kwargs["os"] = os_name
     if headless:
         kwargs["headless"] = "virtual"
+    if kernel.get("bundled") and kernel.get("path"):
+        # 内置内核：直接指定 camoufox-bin，绕过 camoufox 包对 ~/.cache 的查找
+        kwargs["executable_path"] = kernel["path"]
     with Camoufox(**kwargs) as browser:
         page = browser.new_page()
         yield page
