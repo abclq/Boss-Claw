@@ -62,6 +62,9 @@ export interface CamoufoxJob {
   sourceKeyword?: string;
   /** 招聘类型：campus(校招) / experienced(社招) / unknown(未识别)；本地保守判定，不猜测 */
   recruitmentType?: string;
+  /** 岗位发布时间（如「今日更新」「3天前更新」「08-10」）：新鲜度排序与僵尸岗位过滤数据源。
+   *  Camoufox 侧由 lastModifyTime 归一生成；webview 侧从卡片/详情面板提取。缺失时为空串。 */
+  publishTime?: string;
 }
 
 export interface CamoufoxSearchResult {

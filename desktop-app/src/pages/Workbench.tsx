@@ -1454,7 +1454,12 @@ export default function Workbench() {
       markCollectRun(runId, baseRun, {
         status: 'success',
         stage: 'success',
-        stageLabel: got > 0 ? `已完成，采集 ${got} 个岗位` : '已完成（无新增岗位）',
+        // 措辞修正：这里是「单个搜索组合」完成，不是整批任务完成。
+        // 旧文案「已完成，采集 N 个岗位」配上批次级 progress（如 1/12≈8%）会让用户误以为
+        // 「才 8% 就结束了 / 是不是漏采了」。带上组合序号后语义自洽：进度=组合进度，状态=本组合完成。
+        stageLabel: got > 0
+          ? `第 ${qi + 1}/${queue.length} 组完成，采集 ${got} 个岗位`
+          : `第 ${qi + 1}/${queue.length} 组完成（无新增岗位）`,
         processed: got,
         discovered: got,
         progress: Math.round(((qi + 1) / queue.length) * 100),
@@ -1670,7 +1675,7 @@ export default function Workbench() {
     labels: Array.isArray(j.labels) ? j.labels : [],
     welfare: Array.isArray(j.welfare) ? j.welfare : [],
     recruiterName: j.recruiterName || '',
-    publishTime: '',
+    publishTime: String(j.publishTime || '').trim().slice(0, 40),
   });
 
   /** 按指定平台执行一次采集（等待完成），返回本平台对整批队列的续行信号。

@@ -1781,6 +1781,18 @@ function extractJobDetail(card) {
   const jobId = token || dataJobId || '';
   const realUrl = anchor?.href
     || (dataJobId ? `https://www.zhipin.com/job_detail/${dataJobId}.html` : location.href);
+  // 岗位发布时间/更新时间（僵尸岗位过滤 + 新鲜度排序的唯一数据源）
+  // 采集侧此前**从未提取**该字段（publishTime 恒为空）→ priority.ts 的 freshnessPriority
+  // 永远返回 0，新鲜度维度实际失效，与 HR 活跃度混用的「僵尸岗位」也无法按发布时间筛除。
+  // 口径：BOSS 列表卡 / 详情面板常见形态——「刚刚更新」「今日更新」「3日内更新」「本周更新」
+  // 「发布于 08-10」「更新于 3 天前」「08-10」「8月10日」，取首个命中。
+  const publishTime = (() => {
+    const t = textOf($('[class*="job-update"],[class*="update-time"],[class*="publish"],[class*="job-time"]'))
+      || cardText.match(/刚刚(?:更新|发布)|今日(?:更新|发布)|今天(?:更新|发布)|\d+\s*(?:分钟|小时)前(?:更新|发布)|昨天(?:更新|发布)|昨日(?:更新|发布)|\d+\s*天前(?:更新|发布)|\d+\s*日内更新|本周更新|本月更新/)?.[0]
+      || detailText.match(/发布于\s*[\d-]+|(?:更新|发布)于\s*\d+\s*(?:分钟|小时|天)前|(?:更新|发布)于\s*[\d]{1,2}[-/月]\d{1,2}/)?.[0]
+      || '';
+    return String(t || '').trim().slice(0, 40);
+  })();
   const chatBtn = communicateButton();
   const chatUrl = String(chatBtn?.href || chatBtn?.closest?.('a')?.href || '');
   const _welfare = extractWelfareTags(root || document);
@@ -1796,6 +1808,7 @@ function extractJobDetail(card) {
     jobId,
     chatUrl,
     hrActive,
+    publishTime,
     isHeadhunter: fields.isHeadhunter,
     recruiterName,
     recruiterTitle: fields.recruiterTitle,

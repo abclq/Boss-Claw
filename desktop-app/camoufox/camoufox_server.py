@@ -227,11 +227,47 @@ def format_jobs(raw_jobs: list) -> list:
             "description": j.get('jobDesc', ''),
             "recruiterName": j.get('bossName', ''),
             "bossTitle": j.get('bossTitle', ''),
+            # 岗位发布时间（僵尸岗位过滤 + 新鲜度排序的唯一数据源）。
+            # BOSS joblist API 返回 lastModifyTime（毫秒时间戳）/ 部分场景为 lastModifyTimeStr 文本。
+            # 此前该字段从未透传 → TS 侧 publishTime 恒为空，priority.ts 的 freshnessPriority 永远
+            # 返回 0，新鲜度维度实际失效。这里统一转成前端能解析的文本（"X天前更新" / "今日更新"）。
+            "publishTime": _fmt_publish_time(j.get('lastModifyTime') or j.get('lastModifyTimeStr') or j.get('publishTime')),
             "companySize": j.get('scaleName', ''),
             "companyType": j.get('typeName', ''),
             "url": f"https://www.zhipin.com/job_detail/{job_id}.html",
         })
     return output
+
+
+def _fmt_publish_time(raw) -> str:
+    """把 BOSS 的发布时间字段归一成前端 priority.ts::freshnessPriority 能判级的文本。
+
+    只做格式归一，不做业务猜测；无法解析一律返回 ''（与「未识别」同义，不参与排序加权）。
+    """
+    import datetime as _dt
+    s = str(raw or '').strip()
+    if not s:
+        return ''
+    # 已是文本形态（如「3日内更新」「今天」）→ 原样返回，交给前端正则判级
+    if not s.isdigit():
+        return s[:40]
+    try:
+        ms = int(s)
+        # 秒级时间戳兼容（10 位视为秒，13 位视为毫秒）
+        ts = ms / 1000.0 if ms > 10 ** 11 else float(ms)
+        delta = _dt.datetime.now() - _dt.datetime.fromtimestamp(ts)
+        days = delta.days
+        if days < 0:
+            return ''
+        if days == 0:
+            if delta.seconds < 3600:
+                return '今日更新'
+            return '今日更新'
+        if days == 1:
+            return '1天前更新'
+        return f'{days}天前更新'
+    except Exception:
+        return ''
 
 
 # ============================================================
