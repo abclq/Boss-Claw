@@ -1154,6 +1154,10 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
                 ref={(el: any) => handleRegister(t.id, el)}
                 preload={WEBVIEW_PRELOAD}
                 partition="persist:bossclaw"
+                // allowpopups：允许 guest 页触发 new-window 事件（否则 BOSS 岗位卡片 target=_blank
+                // 的新窗口请求被静默拦截，详情页打不开 → 「加入任务」永远判定为列表页）。
+                // 配合 handleRegister 里的 new-window 监听，拦截后转为本标签 loadURL，不弹独立窗口。
+                allowpopups
                 // backgroundThrottling=no：工作台切到其它模块时隐藏但保持挂载，
                 // 禁用 Chromium 后台节流，保证采集/投递的 guest 页 setTimeout/rAF 全速运行
                 webpreferences="sandbox=no, backgroundThrottling=no"
