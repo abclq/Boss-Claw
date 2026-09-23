@@ -66,6 +66,10 @@
         "to": "camoufox-kernel"
       },
       {
+        "from": "resources/装自动沟通环境.cmd",
+        "to": "装自动沟通环境.cmd"
+      },
+      {
         "from": "resources/docs/使用前必读.md",
         "to": "docs/使用前必读.md"
       }

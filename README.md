@@ -20,6 +20,16 @@
 
 > **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.4**（2026-09-17 发布）。后续功能更新在下方功能表直接以当前实现标注。
 
+> ## 🍴 本仓库是 Fork 优化分支
+>
+> 本项目 Fork 自 **[YanQuan-dozzy/Boss-Claw](https://github.com/YanQuan-dozzy/Boss-Claw)**（原作者 YanQuan-dozzy，上游基线 `e430833`），
+> 原项目的完整功能文档与署名规范见 [`ATTRIBUTION.md`](ATTRIBUTION.md)（均未改动）。
+>
+> **本次优化了什么、原本功能点有哪些、交付物是什么 → 见 [`BRANCH-OPTIMIZATION.md`](BRANCH-OPTIMIZATION.md)**
+>
+> 简要：内置 Camoufox 内核开箱即用 · 修复「加入任务」误判 · 补岗位发布时间让新鲜度排序生效 · 新增福利/工作制度筛选 · 新增同公司单日投递上限 · 修复「已回复」统计恒为 0 并新增投递漏斗看板。
+> 全部为本地确定性规则，未引入外部模型调用；新增设置项默认关闭，老用户升级后行为不变。
+
 ## 下载安装
 
 所有打包产物均发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，**开箱即用，下载即可运行**：
