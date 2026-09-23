@@ -90,6 +90,7 @@ import {
 } from '@/lib/localBackup';
 import { HR_ACTIVITY_FILTER_OPTIONS } from '@/lib/bossclaw/hrActivity';
 import { INTERVIEW_MODE_FILTER_OPTIONS } from '@/lib/bossclaw/interviewMode';
+import { WELFARE_TAG_OPTIONS, normalizeWelfareMust } from '@/lib/bossclaw/welfareFilter';
 import { CHINA_PROVINCES } from '@/lib/bossclaw/locationFilter';
 import { writeTargetLocations } from '@/lib/bossclaw/targetLocationSync';
 import { cleanSalary } from '@/lib/bossclaw/jobDisplay';
@@ -1193,6 +1194,28 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   value={config.interviewModeFilter || 'any'}
                   onChange={(v) => setConfig({ interviewModeFilter: v })}
                   options={INTERVIEW_MODE_FILTER_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">
+                  福利筛选（多选，AND）
+                  <Tooltip title="岗位福利中必须同时包含全部勾选标签，缺任一即跳过。未勾选=不限。岗位未采集到福利信息时不拦截（宽松不误杀，与「面试方式筛选」口径一致）。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
+                <Select
+                  mode="multiple"
+                  style={{ width: '100%' }}
+                  placeholder="不限（默认）"
+                  maxTagCount="responsive"
+                  value={normalizeWelfareMust(config.welfareMust)}
+                  onChange={(v) => setConfig({ welfareMust: normalizeWelfareMust(v) })}
+                  options={WELFARE_TAG_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+                  optionRender={(o) => (
+                    <span title={WELFARE_TAG_OPTIONS.find((x) => x.value === o.value)?.hint}>
+                      {o.label}
+                    </span>
+                  )}
                 />
               </div>
               <div className="sg-item">

@@ -4,6 +4,7 @@
 // 岗位适配档位（类型定义在 fitLevel.ts，与档位→分数/决策的映射放在一起，便于离线回归测试）。
 // 这里只做 type-only 引用，编译期擦除，不构成运行时循环依赖。
 import type { FitLevel } from './fitLevel';
+import type { WelfareTag } from './welfareFilter';
 
 export type ExecutionMode = 'review' | 'auto';
 
@@ -73,6 +74,13 @@ export interface AppConfig {
   hrActivityFilter: HrActivityFilter;
   /** 面试方式筛选：不限 / 仅线上 / 仅线下（确定性规则，非 AI 判断） */
   interviewModeFilter: InterviewModeFilter;
+  /**
+   * 福利 / 工作制度筛选（多选，AND 语义，确定性规则非 AI 判断）：
+   * 岗位 welfare 中必须同时包含全部所选标签，缺任一即在「加入任务」与投递前跳过；
+   * 空数组（默认）= 不限。岗位未采集到福利信息时不拦截（宽松不误杀，与 interviewModeFilter 口径一致）。
+   * 合法取值见 WelfareTag；读取时经 normalizeWelfareMust 过滤脏值。
+   */
+  welfareMust: WelfareTag[];
   /** 最低薪资筛选单位：'day'（按日薪）| 'month'（按月薪），默认 'day' */
   minSalaryMode: 'day' | 'month';
   /**

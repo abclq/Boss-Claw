@@ -37,6 +37,7 @@ import { jobCardStatus, scoreChip } from '@/lib/bossclaw/statusMeta';
 import { formatMetaLine, cleanTitle, decodeSalaryDigits } from '@/lib/bossclaw/jobDisplay';
 import { meetsHrActivityFilter, HR_ACTIVITY_FILTER_LABEL } from '@/lib/bossclaw/hrActivity';
 import { detectInterviewMode } from '@/lib/bossclaw/interviewMode';
+import { matchWelfareTags, normalizeWelfareMust, WELFARE_TAG_LABEL, welfareFilterLabel } from '@/lib/bossclaw/welfareFilter';
 import { detectWorkSchedule } from '@/lib/bossclaw/workSchedule';
 import { buildSearchQueue } from '@/lib/bossclaw/searchUrl';
 import { buildPlatformSearchQueue, describePlatformCriteria, type PlatformSearchQueueItem } from '@/lib/bossclaw/platformUrls';
@@ -505,6 +506,7 @@ export default function Workbench() {
 
     const cfg = useSettingsStore.getState().config;
     const hrFilter = cfg.hrActivityFilter || 'any';
+    const welfareMustM = normalizeWelfareMust(cfg.welfareMust);
     if (hrFilter !== 'any' && !meetsHrActivityFilter(job.hrActive, hrFilter)) {
       addPendingItem({ id: runId, runId, job, status: 'skipped', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '', error: `HR 活跃度「${String(job.hrActive || '未识别').trim()}」不满足设定阈值「${HR_ACTIVITY_FILTER_LABEL[hrFilter]}」，已跳过` });
       addLog('info', `已跳过：${job.title || job.url}（HR 活跃度不满足阈值）`);
@@ -538,6 +540,18 @@ export default function Workbench() {
         const wantedM = imFilterM === 'online' ? '线上' : '线下';
         addPendingItem({ id: runId, runId, job: { ...job, interviewMode: modeM }, status: 'skipped', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '', error: `岗位要求${requiredM}面试，与设定的「仅${wantedM}」冲突，已跳过` });
         addLog('info', `已跳过：${job.title || job.url}（要求${requiredM}面试）`);
+        recomputeStats();
+        return;
+      }
+    }
+    // 福利筛选（多选 AND）：岗位 welfare 缺任一必含标签即跳过。
+    // 未采集到福利信息时不拦截（宽松不误杀，与面试方式筛选口径一致）。
+    if (welfareMustM.length > 0) {
+      const wm = matchWelfareTags(job, welfareMustM);
+      if (!wm.ok) {
+        const missingLabel = wm.missing.map((k) => WELFARE_TAG_LABEL[k]).join(' + ');
+        addPendingItem({ id: runId, runId, job, status: 'skipped', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '', error: `岗位福利缺少「${missingLabel}」，不满足设定的「${welfareFilterLabel(welfareMustM)}」，已跳过` });
+        addLog('info', `已跳过：${job.title || job.url}（福利缺少${missingLabel}）`);
         recomputeStats();
         return;
       }
@@ -888,6 +902,16 @@ export default function Workbench() {
       const modeC = detectInterviewMode(job);
       if (modeC !== 'unknown' && modeC !== imFilterC) {
         addSkipLogOnce('info', `跳过「${job?.title || '岗位'}」（面试方式与设定冲突）`);
+        return false;
+      }
+    }
+    // 福利筛选（多选 AND）：与「加入任务」同口径。未采集到 welfare 时不拦截。
+    const welfareMustC = normalizeWelfareMust(cfg.welfareMust);
+    if (welfareMustC.length > 0) {
+      const wm = matchWelfareTags(job, welfareMustC);
+      if (!wm.ok) {
+        const missingLabel = wm.missing.map((k) => WELFARE_TAG_LABEL[k]).join(' + ');
+        addSkipLogOnce('info', `跳过「${job?.title || '岗位'}」（福利缺少${missingLabel}）`);
         return false;
       }
     }

@@ -14,6 +14,12 @@ import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInT
 import { isCompanyExcluded } from './companyFilter';
 import { isLocationExcluded } from './locationFilter';
 import { detectInterviewMode } from './interviewMode';
+import {
+  matchWelfareTags,
+  normalizeWelfareMust,
+  WELFARE_TAG_LABEL,
+  welfareFilterLabel,
+} from './welfareFilter';
 import { decodeSalaryDigits } from './jobDisplay';
 import {
   detectWorkSchedule,
@@ -507,7 +513,17 @@ function collectHardBlocksFromCtx(ctx: LocalMatchContext): string[] {
       const wanted = imFilter === 'online' ? '线上' : '线下';
       return `岗位要求${required}面试，与设定的「仅${wanted}」冲突`;
     },
-    // 9. 最低薪资（设置 → 元/天 或 元/月；0 表示不限）
+    // 9.5 福利筛选（设置 → welfareMust 多选，AND 语义）
+    //     岗位 welfare 已采集但缺任一必含标签即硬拦截；未采集到福利信息时不拦截（宽松不误杀）。
+    () => {
+      const must = normalizeWelfareMust(config?.welfareMust);
+      if (must.length === 0) return null;
+      const wm = matchWelfareTags(job, must);
+      if (wm.ok) return null;
+      const missingLabel = wm.missing.map((k) => WELFARE_TAG_LABEL[k]).join(' + ');
+      return `岗位福利缺少「${missingLabel}」，不满足设定的「${welfareFilterLabel(must)}」`;
+    },
+    // 10. 最低薪资（设置 → 元/天 或 元/月；0 表示不限）
     //    将岗位任意薪资口径折算为「元/天」或「元/月」后低于阈值即硬拦截，确保不合理低薪岗位不进入投递队列。
     //    面议 / 无薪资岗位无法折算，按「无薪资信号」处理、不拦截（与 salaryPriority 口径一致）。
     () => {
