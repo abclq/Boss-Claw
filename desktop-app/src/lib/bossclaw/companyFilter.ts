@@ -71,3 +71,82 @@ export function isCompanyExcluded(
 
   return { excluded: false, reason: '' };
 }
+
+/* ============================ 同公司投递上限 ============================ */
+
+/** 待判定的「已投递记录」最小结构（PendingItem 的超集，便于离线单测）。 */
+export interface DeliveredLike {
+  status?: string;
+  sentAt?: number;
+  job?: { company?: string | null } | null;
+}
+
+/** 取本地时区的自然日起点（毫秒时间戳）。用于「今日已投」判定，与单日投递上限同口径。 */
+export function startOfLocalDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * 统计某公司在「今日」已成功投递的岗位数。
+ * 口径：status === 'sent' 且 sentAt 落在今日（本地时区自然日）内计 1；
+ * 公司名做与黑名单一致的双向子串归一（兼容「腾讯」与「腾讯科技（深圳）有限公司」）。
+ */
+export function countCompanyDeliveredToday(
+  company: string | null | undefined,
+  delivered: DeliveredLike[],
+  now: number = Date.now()
+): number {
+  const target = normalize(String(company || ''));
+  if (!target) return 0;
+  const dayStart = startOfLocalDay(now);
+  let n = 0;
+  for (const item of delivered || []) {
+    if (item?.status !== 'sent') continue;
+    const sentAt = Number(item?.sentAt || 0);
+    if (!sentAt || sentAt < dayStart) continue;
+    const c = normalize(String(item?.job?.company || ''));
+    if (!c) continue;
+    // 双向子串：任一向包含即视为同一家公司
+    if (c.includes(target) || target.includes(c)) n += 1;
+  }
+  return n;
+}
+
+export interface CompanyLimitResult {
+  /** true = 已达到上限，该岗位应跳过 */
+  limited: boolean;
+  /** 达到上限时今日该公司已投递数 */
+  count: number;
+  reason: string;
+}
+
+/**
+ * 同公司单日投递上限：防止同一家公司批量岗位（如某厂同时放 20 个 Java 岗）
+ * 把每日招呼配额一次性耗光、也对 HR 形成重复骚扰。
+ *
+ * 约定（与 HR 活跃度 / 面试方式筛选一致，宽松不误杀）：
+ * - 开关关闭（默认）时恒不限制；
+ * - 岗位未采集到公司名时不限制（无法判断同公司，宁可放过）；
+ * - limit <= 0 视为不限制（与「最低薪资 0 = 不限」的取值约定一致）；
+ * - limit = 1 即「同公司今日最多投 1 个」。
+ */
+export function companyDailyLimitHit(
+  job: { company?: string | null } | null | undefined,
+  config: AppConfig,
+  delivered: DeliveredLike[],
+  now: number = Date.now()
+): CompanyLimitResult {
+  const limit = Number(config?.companyDailyLimit ?? 0);
+  if (!(limit > 0)) return { limited: false, count: 0, reason: '' };
+  const company = String(job?.company || '').trim();
+  if (!company) return { limited: false, count: 0, reason: '' };
+  const count = countCompanyDeliveredToday(company, delivered, now);
+  if (count < limit) return { limited: false, count, reason: '' };
+  return {
+    limited: true,
+    count,
+    reason: `公司「${company}」今日已投递 ${count} 个岗位，达到设定的同公司单日上限 ${limit} 个，已跳过`,
+  };
+}

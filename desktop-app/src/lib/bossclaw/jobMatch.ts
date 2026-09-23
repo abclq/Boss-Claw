@@ -11,7 +11,7 @@ import { normalizeStringList, findDirectionRule } from './helpers';
 import { HARD_BLOCK_SCORE_CAP } from './fitLevel';
 import { keywordHit, extractJdKeywords } from './resumeMatch';
 import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInText, extractEnglishTokens, zhAliasCoversTerm } from './skillTaxonomy';
-import { isCompanyExcluded } from './companyFilter';
+import { isCompanyExcluded, companyDailyLimitHit, type DeliveredLike } from './companyFilter';
 import { isLocationExcluded } from './locationFilter';
 import { detectInterviewMode } from './interviewMode';
 import {
@@ -354,13 +354,20 @@ interface LocalMatchContext {
   schedule: WorkSchedule;
   expected: SalaryRange;
   jdRange: SalaryRange;
+  /**
+   * 今日已成功投递的记录（status=sent 且 sentAt 落在今日）。
+   * 供「同公司单日投递上限」硬约束判定用；缺省为空数组（= 无从判定，放过）。
+   */
+  deliveredToday: DeliveredLike[];
 }
 
 function buildLocalMatchContext(
   job: JobMeta,
   profile: Profile | null,
   config: Partial<AppConfig>,
-  resumeText = ''
+  resumeText = '',
+  // 同公司单日投递上限用；不传即空数组（= 无从判定同公司，放过，保持原有行为）
+  deliveredToday: DeliveredLike[] = []
 ): LocalMatchContext {
   const title = String(job.title || '');
   const desc = String(job.description || '');
@@ -441,6 +448,8 @@ function buildLocalMatchContext(
     schedule,
     expected,
     jdRange,
+    // 同公司单日投递上限用：今日已投列表由调用方注入；不传即空数组（= 不限制）。
+    deliveredToday,
   };
 }
 
@@ -522,6 +531,16 @@ function collectHardBlocksFromCtx(ctx: LocalMatchContext): string[] {
       if (wm.ok) return null;
       const missingLabel = wm.missing.map((k) => WELFARE_TAG_LABEL[k]).join(' + ');
       return `岗位福利缺少「${missingLabel}」，不满足设定的「${welfareFilterLabel(must)}」`;
+    },
+    // 9.6 同公司单日投递上限（设置 → companyDailyLimit；0 = 不限）
+    //     达到上限即硬拦截，防止同一家公司批量岗位耗光每日招呼配额。
+    //     今日已投列表由调用方经 ctx.deliveredToday 注入（缺省为空 = 无从判定同公司，放过）。
+    () => {
+      const limit = Number(config?.companyDailyLimit ?? 0);
+      if (!(limit > 0)) return null;
+      const hit = companyDailyLimitHit(job, { ...config, companyDailyLimit: limit } as AppConfig, ctx.deliveredToday || []);
+      if (!hit.limited) return null;
+      return hit.reason;
     },
     // 10. 最低薪资（设置 → 元/天 或 元/月；0 表示不限）
     //    将岗位任意薪资口径折算为「元/天」或「元/月」后低于阈值即硬拦截，确保不合理低薪岗位不进入投递队列。
@@ -759,10 +778,13 @@ export function computeLocalMatch(
   job: JobMeta,
   profile: Profile | null,
   config: Partial<AppConfig> = {},
-  resumeText = ''
+  resumeText = '',
+  // 今日已成功投递记录（供「同公司单日投递上限」硬约束判定）。
+  // 不传默认空数组 = 无处判定同公司，该约束自动放过（保持既有调用方行为不变）。
+  deliveredToday: DeliveredLike[] = []
 ): LocalMatchResult {
   // 一次性解析共享事实（JD 文本 / 缺口词 / 学历 / 技能池 / 薪资口径），供各子步骤复用，避免重复计算
-  const ctx = buildLocalMatchContext(job, profile, config, resumeText);
+  const ctx = buildLocalMatchContext(job, profile, config, resumeText, deliveredToday);
   // 硬约束（deal-breaker，信息充分才拦截，避免误杀）：9 条规则按顺序收集，任一项存在即应拦下
   const hardBlocks = collectHardBlocksFromCtx(ctx);
   // 证据数组由各维度子函数按「技能 → 方向 → 地点 → 薪资」顺序追加（顺序 = 展示顺序）

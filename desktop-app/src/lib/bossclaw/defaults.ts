@@ -53,6 +53,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   // 福利 / 工作制度筛选（多选，AND 语义）：空数组 = 不限。
   // 岗位未采集到 welfare 时不拦截（宽松不误杀，与 interviewModeFilter 口径一致）。
   welfareMust: [],
+  // 同公司单日投递上限（个）：0 = 不限；>0 时同一家公司当日投递数达到该值即跳过后续岗位。
+  // 默认 0 保持原有行为不变；岗位未采集到公司名时不限制。
+  companyDailyLimit: 0,
   // 最低薪资筛选单位：'day'（按日薪）| 'month'（按月薪）
   minSalaryMode: 'day',
   // 最低日薪（元/天，确定性硬约束）：0 = 不限；>0 时岗位折算日薪低于该值即硬性排除（如 50 元/天的不合理岗位）

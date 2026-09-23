@@ -4030,7 +4030,59 @@ html[data-theme='dark'] .task-ghost-btn:hover,
   transition: width 0.4s ease;
 }
 
-/* 3. 两列对比布局 (Stats 2Col) 与左侧整高铺满 */
+/* 3.5 投递漏斗（Stats 转化看板）：采集 → 投递 → 打开沟通 → 已回复 */
+.funnel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.funnel-row {
+  display: grid;
+  grid-template-columns: 76px 1fr 44px 46px;
+  align-items: center;
+  gap: 10px;
+}
+.funnel-label {
+  color: var(--fg);
+  font-weight: 500;
+  font-size: 13px;
+}
+.funnel-track {
+  height: 10px;
+  width: 100%;
+  background: var(--hover-bg);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.funnel-bar {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.funnel-bar-discovered { background: #64748b; }
+.funnel-bar-sent { background: #22c55e; }
+.funnel-bar-opened { background: #a78bfa; }
+.funnel-bar-replied { background: #f59e0b; }
+.funnel-value {
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  font-size: 13px;
+}
+.funnel-pct {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  text-align: right;
+}
+.funnel-foot {
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--fg-subtle);
+  line-height: 1.6;
+}
+
+/* 4. 两列对比布局 (Stats 2Col) 与左侧整高铺满 */
 .stats-card-status {
   display: flex;
   flex-direction: column;

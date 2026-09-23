@@ -1220,6 +1220,21 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               </div>
               <div className="sg-item">
                 <span className="field-label">
+                  同公司单日上限
+                  <Tooltip title="同一家公司当天最多投递几个岗位，达到即跳过该公司后续岗位。防止某厂一次放 20 个同类岗把每日招呼配额耗光、也对 HR 形成重复骚扰。0（默认）= 不限。岗位未采集到公司名时不限制。">
+                    <InfoCircleOutlined className="field-label__hint" />
+                  </Tooltip>
+                </span>
+                <InputNumber
+                  min={0}
+                  max={20}
+                  style={{ width: '100%' }}
+                  value={config.companyDailyLimit ?? 0}
+                  onChange={(v) => setConfig({ companyDailyLimit: v ?? 0 })}
+                />
+              </div>
+              <div className="sg-item">
+                <span className="field-label">
                   {isMonthlySalary ? '最低月薪（K元/月，0=不限）' : '最低日薪（元/天，0=不限）'}
                   <Tooltip title={isMonthlySalary ? "薪资区间按最低值计算（如 3k-5k 按 3k 计算）。低于该月薪的岗位将被硬性排除。" : "薪资区间按最低值折算为日薪计算。低于该日薪的岗位将被硬性排除。"}>
                     <InfoCircleOutlined className="field-label__hint" />

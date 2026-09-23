@@ -370,7 +370,10 @@ export async function analyzeJob(
   resumeText: string,
   config: AppConfig,
   model: AppConfig['model'],
-  customGreetingPrompt?: string
+  customGreetingPrompt?: string,
+  // 今日已成功投递记录（供「同公司单日投递上限」本地硬约束判定）。
+  // 不传默认空数组 = 无处判定同公司，该约束放过（保持既有调用方行为不变）。
+  deliveredToday: Parameters<typeof computeLocalMatch>[4] = []
 ): Promise<JobAnalysis> {
   if (!profile) throw new Error('请先生成职业画像');
   // 打招呼语/求职信提示词来源优先级：① skill（greetings 技能，含用户自定义技能）→ ② 简历中心输入框内容 → ③ 都不满足则回退本地规则。
@@ -399,7 +402,7 @@ export async function analyzeJob(
   //   - 维度分（技能/方向/地点/薪资/学历/经验）用于 UI 可解释展示与 AI 分校准；
   //   - 缺口判定同时纳入简历原文（简历里的技能表述可能只写在经历行、未落入结构化 facts，
   //     只查画像会误报缺失——如「熟练使用 ChatGPT/Claude/Cursor」）。
-  const local = computeLocalMatch(job, profile, config, resumeText);
+  const local = computeLocalMatch(job, profile, config, resumeText, deliveredToday);
   // 本地硬拦快筛前置：确定性硬约束命中（黑名单/城市反选/求职类型/学历经验不足/外部网申/面试方式/猎头…
   // 见 computeLocalMatch hardBlocks 清单）→ 结果必然 reject（score ≤35，属不推荐档 0-49 的低端），
   // AI 无任何裁决余地 → 直接返回本地确定性结果、不发 AI。

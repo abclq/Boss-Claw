@@ -483,6 +483,59 @@ export default function Stats() {
             ))}
           </div>
 
+          {/* 投递漏斗（转化看板）：采集 → 投递 → 打开沟通窗 → 收到回复 */}
+          <Card
+            size="small"
+            title="投递漏斗"
+            className="stats-card-funnel"
+            extra={
+              snapshot.funnel.sent > 0 ? (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  回复率 {snapshot.funnel.replyRate == null ? '—' : `${Math.round(snapshot.funnel.replyRate * 100)}%`}
+                  {' · '}
+                  打开率 {snapshot.funnel.openRate == null ? '—' : `${Math.round(snapshot.funnel.openRate * 100)}%`}
+                </Text>
+              ) : (
+                <Text type="secondary" style={{ fontSize: 12 }}>暂无投递记录</Text>
+              )
+            }
+          >
+            <div className="funnel-list">
+              {[
+                { key: 'discovered', label: '采集入队', value: snapshot.funnel.discovered, hint: '范围内已记录的岗位（含未投递）' },
+                { key: 'sent', label: '已投递', value: snapshot.funnel.sent, hint: '招呼/简历发送成功' },
+                { key: 'opened', label: '已打开沟通', value: snapshot.funnel.opened, hint: '已打开沟通窗口，尚未发送文字气泡' },
+                { key: 'replied', label: '已回复', value: snapshot.funnel.replied, hint: 'HR 来消息后自动跟聊回复成功' },
+              ].map((row) => {
+                const base = Math.max(1, snapshot.funnel.discovered);
+                const width = Math.round((row.value / base) * 100);
+                const ofPrev =
+                  row.key === 'discovered'
+                    ? null
+                    : snapshot.funnel.sent > 0 && row.key !== 'sent'
+                      ? Math.round((row.value / snapshot.funnel.sent) * 100)
+                      : row.key === 'sent'
+                        ? Math.round((snapshot.funnel.sent / Math.max(1, snapshot.funnel.discovered)) * 100)
+                        : null;
+                return (
+                  <div className="funnel-row" key={row.key} title={row.hint}>
+                    <span className="funnel-label">{row.label}</span>
+                    <div className="funnel-track">
+                      <div className={`funnel-bar funnel-bar-${row.key}`} style={{ width: `${Math.max(width, 2)}%` }} />
+                    </div>
+                    <span className="funnel-value">{row.value}</span>
+                    <span className="funnel-pct">
+                      {ofPrev == null ? '' : `${ofPrev}%`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="funnel-foot">
+              面试环节暂无采集来源（PendingItem 无面试态字段），暂不纳入漏斗；口径：已回复 ⊆ 已投递。
+            </div>
+          </Card>
+
           {/* 状态分布 + AI 匹配分析 */}
           <div className="stats-row stats-row--2">
             <Card

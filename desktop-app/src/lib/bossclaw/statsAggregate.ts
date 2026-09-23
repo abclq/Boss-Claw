@@ -199,6 +199,24 @@ export interface StatsSnapshot {
   /** sent / (sent + failed)，全范围为样本 */
   successRate: number | null;
 
+  /**
+   * 投递漏斗（转化看板）：采集 → 投递 → 打开沟通窗 → 收到回复 → 面试。
+   * - discovered：范围内岗位数（已入队视角的采集量）
+   * - sent / opened / replied：同上的状态与 replySentAt 派生，**replied ⊆ sent**（回复条 status 仍为 sent）
+   * - interviewCount：无采集来源（PendingItem 无面试态字段），恒为 0，仅占位展示
+   * - replyRate：replied / sent（最核心的转化指标，分母 0 时为 null）
+   * - openRate：opened / sent
+   */
+  funnel: {
+    discovered: number;
+    sent: number;
+    opened: number;
+    replied: number;
+    interviewCount: number;
+    replyRate: number | null;
+    openRate: number | null;
+  };
+
   companyTop: [string, number][];
   cityTop: [string, number][];
   directionTop: [string, number][];
@@ -442,6 +460,8 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
 
   let total = 0;
   let analyzed = 0;
+  // 漏斗末环「已回复」计数：见下方 PendingItem.replySentAt 判定处。
+  let replied = 0;
   let scored = 0;
   let scoreSum = 0;
   let scoreNone = 0;
@@ -493,6 +513,9 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     total += 1;
     const st = (counts[p.status] !== undefined ? p.status : 'pending') as PendingStatus;
     counts[st] += 1;
+    // 已回复（漏斗最后一环）：HR 来消息后 AI 跟聊回复成功即有 replySentAt。
+    // 该条 status 仍为 'sent'，故 replied ⊆ sent，天然构成漏斗而不重复计数。
+    if (p.replySentAt) replied += 1;
 
     if (p.analysis?.decision && decisions[p.analysis.decision] !== undefined) decisions[p.analysis.decision] += 1;
 
@@ -637,6 +660,18 @@ export function buildStatsSnapshot(input: BuildStatsInput): StatsSnapshot {
     goalPct: Math.min(100, Math.round((todaySent / dailyTarget) * 100)),
 
     successRate: rate(counts.sent, counts.sent + counts.failed),
+
+    funnel: {
+      discovered: total,
+      sent: counts.sent,
+      opened: counts.opened,
+      replied,
+      // 无采集来源：PendingItem 无面试态字段（只有 sentAt/replySentAt/openedAt）。
+      // 留 0 而非删字段，是为了让看板有「面试」这一环的占位，后续接真实数据源时不必改 UI。
+      interviewCount: 0,
+      replyRate: rate(replied, counts.sent),
+      openRate: rate(counts.opened, counts.sent),
+    },
 
     companyTop: topN(companyMap, 8),
     cityTop: topN(cityMap, 8),

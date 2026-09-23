@@ -81,6 +81,13 @@ export interface AppConfig {
    * 合法取值见 WelfareTag；读取时经 normalizeWelfareMust 过滤脏值。
    */
   welfareMust: WelfareTag[];
+  /**
+   * 同公司单日投递上限（个，确定性规则非 AI 判断）：
+   * 防止同一家公司批量岗位把每日招呼配额耗光、对 HR 形成重复骚扰。
+   * 0（默认）= 不限；设为 1 即「同公司今日最多投 1 个」。
+   * 岗位未采集到公司名时不限制（无法判断同公司，宁可放过）。
+   */
+  companyDailyLimit: number;
   /** 最低薪资筛选单位：'day'（按日薪）| 'month'（按月薪），默认 'day' */
   minSalaryMode: 'day' | 'month';
   /**

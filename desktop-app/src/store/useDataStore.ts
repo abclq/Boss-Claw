@@ -207,12 +207,16 @@ export const useDataStore = create<DataState>()(
         let failed = 0;
         let pendingCount = 0;
         let analyzed = 0;
+        // 已回复：HR 来消息后 AI 跟聊回复成功（replySentAt 有值）。此前 Stats.replied
+        // 只有 DEFAULT_STATS 里的 0，从未由 recomputeStats 赋值 → 统计恒为 0，是死字段。
+        let replied = 0;
         for (const p of pending) {
           if (p.status === 'sent') sent += 1;
           else if (p.status === 'skipped') skipped += 1;
           else if (p.status === 'failed') failed += 1;
           if (p.status === 'approved' || p.status === 'approved_queue' || p.status === 'pending') pendingCount += 1;
           if (p.analysis) analyzed += 1;
+          if (p.replySentAt) replied += 1;
         }
         const next = {
           ...stats,
@@ -222,6 +226,7 @@ export const useDataStore = create<DataState>()(
           pending: pendingCount,
           discovered: pending.length,
           analyzed,
+          replied,
         };
         // P08：计数未变化时跳过 set，避免无条件 persist 对整个数据包（含 base64 图片简历）重复序列化
         if (
@@ -230,7 +235,8 @@ export const useDataStore = create<DataState>()(
           stats.failed === next.failed &&
           stats.pending === next.pending &&
           stats.discovered === next.discovered &&
-          stats.analyzed === next.analyzed
+          stats.analyzed === next.analyzed &&
+          stats.replied === next.replied
         ) {
           return;
         }

@@ -28,7 +28,7 @@ import { rerankPending, promoteApprovedToQueue } from '@/lib/bossclaw/priority';
 import { analyzeJob, resolveQueueMinScore } from '@/lib/bossclaw/matching';
 import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
-import { isCompanyExcluded } from '@/lib/bossclaw/companyFilter';
+import { isCompanyExcluded, companyDailyLimitHit } from '@/lib/bossclaw/companyFilter';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
 import { makePendingItem, jobUrlKey } from '@/store/useDataStore';
 import { checkBossLogin } from '@/lib/bossLogin';
@@ -556,6 +556,14 @@ export default function Workbench() {
         return;
       }
     }
+    // 同公司单日投递上限：达到上限即跳过该公司后续岗位（0 = 不限，默认关闭）。
+    const cl = companyDailyLimitHit(job, cfg, useDataStore.getState().pending);
+    if (cl.limited) {
+      addPendingItem({ id: runId, runId, job, status: 'skipped', createdAt: Date.now(), retryCount: 0, deliveryGreeting: '', error: cl.reason });
+      addLog('info', `已跳过：${job.title || job.url}（${cl.reason}）`);
+      recomputeStats();
+      return;
+    }
 
     // 快路径：该岗位已入队，且旧卡完整、本次解析也完整且字段一致 → 立即提示已存在，
     // 跳过冗余的 AI 分析（避免重复消耗 LLM 调用与等待，也让「已存在」提醒即时可见）。
@@ -586,7 +594,8 @@ export default function Workbench() {
     try {
       addLog('info', `AI 正在分析岗位：${job.title || job.url}`);
       const customGreetingPrompt = useDataStore.getState().greetingPrompt;
-      const analysis = await analyzeJob(job, profile, useDataStore.getState().resumeText, config, config.model, customGreetingPrompt || undefined);
+      // 今日已投列表供「同公司单日投递上限」本地硬约束判定（见 analyzeJob → computeLocalMatch 9.6）
+      const analysis = await analyzeJob(job, profile, useDataStore.getState().resumeText, config, config.model, customGreetingPrompt || undefined, useDataStore.getState().pending.filter((p) => p.status === 'sent'));
       const item = makePendingItem(job, analysis, analysis.greeting, runId);
       // 同链接查重+自愈：若该岗位已入队，绝不叠卡，且一律提醒「已在队列」。
       // 信息处置三原则：
@@ -915,10 +924,17 @@ export default function Workbench() {
         return false;
       }
     }
+    // 同公司单日投递上限：与「加入任务」同口径（0 = 不限，默认关闭）。
+    const clC = companyDailyLimitHit(job, cfg, useDataStore.getState().pending);
+    if (clC.limited) {
+      addSkipLogOnce('info', `跳过「${job?.title || '岗位'}」（${clC.reason}）`);
+      return false;
+    }
     const meta: JobMeta = { ...job, url, jobId, interviewMode: detectInterviewMode(job) };
     try {
       const customGreetingPrompt = useDataStore.getState().greetingPrompt;
-      const analysis = await analyzeJob(meta, profile, data.resumeText, cfg, cfg.model, customGreetingPrompt || undefined);
+      // 同「加入任务」链路：透传今日已投列表供同公司单日投递上限判定
+      const analysis = await analyzeJob(meta, profile, data.resumeText, cfg, cfg.model, customGreetingPrompt || undefined, useDataStore.getState().pending.filter((p) => p.status === 'sent'));
       // 入库门槛：reject（硬伤 / 明确冲突）一律跳过；其余档位统一按「最低入队分」放行，
       // 门槛由设置页「硬性智能过滤 → 最低入队分」配置（config.minQueueScore，默认 60，0 = 不限）；
       // 不再写死 60 分底线——推荐岗位分（minScore）只决定「是否推荐」，入队资格由最低入队分决定。
