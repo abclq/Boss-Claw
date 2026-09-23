@@ -32,14 +32,23 @@
 
 ## 下载安装
 
-所有打包产物均发布在 [GitHub Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest)，**开箱即用，下载即可运行**：
+> **本分支（abclq 优化版）构建产物发布在本仓库 Releases：https://github.com/abclq/Boss-Claw/releases** — 内含 Camoufox 指纹内核，开箱即用：
+>
+> - 🪟 Windows 10/11 x64（免安装，解压即用）：**[BossClaw-2.5.4-Windows-x64.zip](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-Windows-x64.zip)**（629 MB）
+> - 🐧 Linux x86_64 AppImage：**[BossClaw-2.5.4-x86_64.AppImage](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-x86_64.AppImage)**
+> - 🐧 Debian / Ubuntu：**[BossClaw-2.5.4-amd64.deb](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-amd64.deb)**
+>
+> 一键直达页：**https://github.com/abclq/Boss-Claw/releases/latest**
+> Windows 版**不需要装 Python**（仅「自动沟通」需要，包内附一键装脚本）；未提供 .exe 安装版原因是 Linux 交叉编译的 NSIS 单文件在 Win10 上双击无反应（实测），zip 最稳。优化明细见 [`BRANCH-OPTIMIZATION.md`](BRANCH-OPTIMIZATION.md)。
+>
+> 上游原版安装包仍在原作者仓库：[YanQuan-dozzy Releases](https://github.com/YanQuan-dozzy/Boss-Claw/releases)。
 
-### Windows（10/11，x64）
+### 原项目（上游）产物链接（保留备查）
 
-| 版本 | 文件 | 说明 |
+| 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| 🪟 安装版（推荐） | [BossClaw-2.5.4-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-x64.exe) | 标准 NSIS 安装包，可自定义安装目录、创建桌面/开始菜单快捷方式 |
-| 🪟 便携版 | [BossClaw-2.5.4-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-portable.exe) | 绿色单文件，无需安装、解压即用 |
+| 🪟 安装版 | [BossClaw-2.5.4-x64.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-x64.exe) | 上游标准 NSIS 安装包 |
+| 🪟 便携版 | [BossClaw-2.5.4-portable.exe](https://github.com/YanQuan-dozzy/Boss-Claw/releases/latest/download/BossClaw-2.5.4-portable.exe) | 上游绿色单文件 |
 
 ### Linux（x86_64）
 
@@ -63,7 +72,8 @@
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.4（最新） | Windows x64 安装版 + 便携版 |
+| v2.5.4（最新） | 上游：Windows x64 安装版 + 便携版 |
+| **本 Fork 分支 v2.5.4** | **Windows x64 免安装 zip（内置 Camoufox 内核） + Linux AppImage + deb → [abclq/Boss-Claw Releases](https://github.com/abclq/Boss-Claw/releases/latest)** |
 | v2.5.3 | Windows x64 安装版 + 便携版 · Linux AppImage / deb / tar.gz · macOS 源码自构建档案 |
 | v2.5.2 | Windows x64 安装版 + 便携版 |
 | v2.4.0 | Windows x64 安装版 + 便携版 |

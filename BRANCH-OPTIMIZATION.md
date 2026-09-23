@@ -109,9 +109,15 @@
 
 ## 四、交付物
 
+> **全部打包产物已发布在本仓库 Release，可直接下载：https://github.com/abclq/Boss-Claw/releases/latest**
+>
+> - 🪟 Windows 10/11 x64（免安装）：[BossClaw-2.5.4-Windows-x64.zip（629 MB）](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-Windows-x64.zip)
+> - 🐧 Linux x86_64：[BossClaw-2.5.4-x86_64.AppImage](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-x86_64.AppImage) · [BossClaw-2.5.4-amd64.deb](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-amd64.deb)
+> - 本分支的 Release 发布页：[v2.5.4](https://github.com/abclq/Boss-Claw/releases/tag/v2.5.4)（含使用说明与 MD5 校验和）
+
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
-| Windows 10/11 x64 | `BossClaw-2.5.4-Windows10-免安装-x64.zip`（629 MB） | 解压双击 `BossClaw.exe` 即用；内核已内置。**不用装 Python，只有「自动沟通」需要**（包内附「装自动沟通环境.cmd」一键装） |
+| Windows 10/11 x64 | `BossClaw-2.5.4-Windows-x64.zip`（629 MB） | 解压双击 `BossClaw.exe` 即用；内核已内置。**不用装 Python，只有「自动沟通」需要**（包内附「装自动沟通环境.cmd」一键装） |
 | Linux x86_64 | `BossClaw-2.5.4-x86_64.AppImage` | 跨发行版通用 |
 | Linux Debian/Ubuntu | `BossClaw-2.5.4-amd64.deb` | `sudo dpkg -i` |
 
