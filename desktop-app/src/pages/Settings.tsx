@@ -1068,7 +1068,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <div className="sg-item">
                 <span className="field-label">
                   目标城市
-                  <Tooltip title="与「简历中心 → 职业画像」的城市同源：两处共享同一份内容、相互补充，任一处增删都会同步。可输入多个城市，用回车或逗号（, ，）／顿号（、）分隔；留空表示不限城市（按全国搜索）。">
+                  <Tooltip title="与「简历中心 → 职业画像」的城市同源：两处共享同一份内容、相互补充，任一处增删都会同步。可输入多个城市，用回车或逗号（, ，）／顿号（、）分隔；留空表示不限城市（按全国搜索）。支持区级写法（仅 BOSS 直聘生效）：「城市·区」如 杭州·余杭区；多区用 / 分隔，如 杭州·余杭区/西湖区（区码取 BOSS 搜索页「工作区域」同源行政区划码）。">
                     <InfoCircleOutlined className="field-label__hint" />
                   </Tooltip>
                 </span>
@@ -1078,7 +1078,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
                   value={config.targetLocations}
                   onChange={(v) => writeTargetLocations(v)}
                   tokenSeparators={[',', '，', '、']}
-                  placeholder="输入城市后回车；留空 = 全国"
+                  placeholder="输入城市后回车；留空 = 全国；区级：杭州·余杭区/西湖区"
                   notFoundContent={null}
                 />
               </div>

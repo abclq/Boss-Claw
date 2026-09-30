@@ -12,6 +12,7 @@
 import type { AppConfig, DirectionPlan, JobPlatform } from './types';
 import { selectedDirectionItems } from './directions';
 import { buildJobSearchUrl, RANDOM_COLLECT_LABEL } from './searchUrl';
+import { parseLocationEntry } from './targetLocations';
 
 // ==================== 猎聘 liepin ====================
 export const LIEPIN_BASE_URL = 'https://www.liepin.com/zhaopin/';
@@ -176,6 +177,8 @@ export function buildJob51SearchUrl(query: Job51SearchQuery = {}): string {
 export interface PlatformSearchQuery {
   keyword?: string;
   city?: string;
+  /** 区级筛选（仅 BOSS 支持，经 searchUrl.resolveDistrictCodes 解析为 multiBusinessDistrict；其他平台忽略） */
+  districts?: string[];
   salary?: string;
   page?: number;
 }
@@ -192,7 +195,7 @@ export function buildPlatformSearchUrl(platform: JobPlatform, query: PlatformSea
     case 'boss':
     default:
       return buildJobSearchUrl({
-        keyword: query.keyword, city: query.city, salary: query.salary, page: query.page,
+        keyword: query.keyword, city: query.city, districts: query.districts, salary: query.salary, page: query.page,
       });
   }
 }
@@ -279,7 +282,15 @@ export function buildPlatformSearchQueue(
   if (config.collectWithoutKeyword) {
     for (const location of locations) {
       for (const employmentType of employmentTypes) {
-        const url = buildPlatformSearchUrl(platform, { city: location, salary: config.salary, page: 1 });
+        // 条目支持区级写法（杭州·余杭区）：BOSS 带 multiBusinessDistrict；其他平台仅支持城市，剥回城市名
+        const entry = parseLocationEntry(location);
+        const cityPart = entry?.city || location;
+        const url = buildPlatformSearchUrl(platform, {
+          city: cityPart,
+          districts: entry?.districts,
+          salary: config.salary,
+          page: 1,
+        });
         if (seen.has(url)) continue;
         seen.add(url);
         queue.push({
@@ -297,10 +308,12 @@ export function buildPlatformSearchQueue(
   const directions = selectedDirectionItems(directionPlan);
   for (const direction of directions) {
     for (const location of locations) {
+      const entry = parseLocationEntry(location);
+      const cityPart = entry?.city || location;
       for (const keyword of direction.keywords) {
         for (const employmentType of employmentTypes) {
           const url = buildPlatformSearchUrl(platform, {
-            keyword, city: location, salary: config.salary, page: 1,
+            keyword, city: cityPart, districts: entry?.districts, salary: config.salary, page: 1,
           });
           if (seen.has(url)) continue;
           seen.add(url);

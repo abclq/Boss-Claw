@@ -13,6 +13,7 @@ import { keywordHit, extractJdKeywords } from './resumeMatch';
 import { isNonSkillJdToken, equivalentSkillKeys, coveringSkillKeys, skillKeysInText, extractEnglishTokens, zhAliasCoversTerm } from './skillTaxonomy';
 import { isCompanyExcluded, companyDailyLimitHit, type DeliveredLike } from './companyFilter';
 import { isLocationExcluded } from './locationFilter';
+import { locationEntryMatchesJob } from './targetLocations';
 import { detectInterviewMode } from './interviewMode';
 import {
   matchWelfareTags,
@@ -473,11 +474,11 @@ function collectHardBlocksFromCtx(ctx: LocalMatchContext): string[] {
     },
     // 3. 猎头岗位
     () => (config.excludeHeadhunters && job.isHeadhunter ? '岗位为猎头代招，已按「排除猎头」设置拦截' : null),
-    // 4. 目标城市不符（画像硬约束 locations 非空且可判定）
+    // 4. 目标城市不符（画像硬约束 locations 非空且可判定；条目支持区级写法「城市·区」）
     () => {
       if (!ctx.targetLocations.length || !isLocationDecidable(job.location)) return null;
       const locText = String(job.location || '');
-      const hit = ctx.targetLocations.some((city) => city && locText.includes(city));
+      const hit = ctx.targetLocations.some((entry) => entry && locationEntryMatchesJob(entry, locText));
       return hit
         ? null
         : `岗位地点「${locText.trim()}」不在目标城市（${ctx.targetLocations.slice(0, 4).join('、')}）`;
@@ -671,7 +672,7 @@ function computeDirectionScore(ctx: LocalMatchContext, evidence: string[]): numb
 function computeLocationScore(ctx: LocalMatchContext, evidence: string[]): number | null {
   if (isLocationDecidable(ctx.job.location) && ctx.targetLocations.length) {
     const locText = String(ctx.job.location || '');
-    const hit = ctx.targetLocations.some((city) => city && locText.includes(city));
+    const hit = ctx.targetLocations.some((entry) => entry && locationEntryMatchesJob(entry, locText));
     if (hit) evidence.push(`地点命中：${locText.trim()} 在目标城市内`);
     return hit ? 100 : 0;
   }
