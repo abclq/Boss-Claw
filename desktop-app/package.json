@@ -1,6 +1,6 @@
 {
   "name": "bossclaw-desktop",
-  "version": "2.5.4",
+  "version": "2.6.1",
   "description": "BossClaw —— 面向求职者的本地 AI 投递助手",
   "private": true,
   "author": "YanQuan",
@@ -62,8 +62,8 @@
         "to": "app/camoufox/requirements.txt"
       },
       {
-        "from": "camoufox-kernel",
-        "to": "camoufox-kernel"
+        "from": "camoufox-kernel-win",
+        "to": "camoufox-kernel-win"
       },
       {
         "from": "resources/装自动沟通环境.cmd",

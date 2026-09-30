@@ -8,7 +8,7 @@
 
 [快速开始](#快速开始) · [下载安装](#下载安装) · [核心功能](#核心功能) · [项目结构](#项目结构) · [使用边界](#安全与使用边界) · [桌面版说明](desktop-app/README.md) · [Agent 接入](#外部-agent-接入可选控制桥--mcp--代答)
 
-![Version](https://img.shields.io/badge/version-v2.5.4-078A83)
+![Version](https://img.shields.io/badge/version-v2.6.1-078A83)
 ![Electron](https://img.shields.io/badge/Electron-%5E31-47848F)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
@@ -18,7 +18,7 @@
 
 </div>
 
-> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.5.4**（2026-09-17 发布）。后续功能更新在下方功能表直接以当前实现标注。
+> **版本口径**：本文档描述以 `main` 分支当前实现为准；**最新正式安装包为 v2.6.1**（2026-09-30 发布）。后续功能更新在下方功能表直接以当前实现标注。
 
 > ## 🍴 本仓库是 Fork 优化分支
 >
@@ -34,9 +34,9 @@
 
 > **本分支（abclq 优化版）构建产物发布在本仓库 Releases：https://github.com/abclq/Boss-Claw/releases** — 内含 Camoufox 指纹内核，开箱即用：
 >
-> - 🪟 Windows 10/11 x64（免安装，解压即用）：**[BossClaw-2.5.4-Windows-x64.zip](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-Windows-x64.zip)**（629 MB）
-> - 🐧 Linux x86_64 AppImage：**[BossClaw-2.5.4-x86_64.AppImage](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-x86_64.AppImage)**
-> - 🐧 Debian / Ubuntu：**[BossClaw-2.5.4-amd64.deb](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-amd64.deb)**
+> - 🪟 Windows 10/11 x64（免安装，解压即用）：**[BossClaw-2.6.1-x64.zip](https://github.com/abclq/Boss-Claw/releases/download/v2.6.1/BossClaw-2.6.1-x64.zip)**（601 MB）
+> - 🐧 Linux x86_64 AppImage：**[BossClaw-2.5.4-x86_64.AppImage](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-x86_64.AppImage)**（仍为 v2.5.4）
+> - 🐧 Debian / Ubuntu：**[BossClaw-2.5.4-amd64.deb](https://github.com/abclq/Boss-Claw/releases/download/v2.5.4/BossClaw-2.5.4-amd64.deb)**（仍为 v2.5.4）
 >
 > 一键直达页：**https://github.com/abclq/Boss-Claw/releases/latest**
 > Windows 版**不需要装 Python**（仅「自动沟通」需要，包内附一键装脚本）；未提供 .exe 安装版原因是 Linux 交叉编译的 NSIS 单文件在 Win10 上双击无反应（实测），zip 最稳。优化明细见 [`BRANCH-OPTIMIZATION.md`](BRANCH-OPTIMIZATION.md)。
@@ -72,8 +72,9 @@
 
 | 发布版本 | 平台产物 |
 | --- | --- |
-| v2.5.4（最新） | 上游：Windows x64 安装版 + 便携版 |
-| **本 Fork 分支 v2.5.4** | **Windows x64 免安装 zip（内置 Camoufox 内核） + Linux AppImage + deb → [abclq/Boss-Claw Releases](https://github.com/abclq/Boss-Claw/releases/latest)** |
+| v2.6.1（最新） | 上游：Windows x64 安装版 + 便携版 |
+| **本 Fork 分支 v2.6.1** | **Windows x64 免安装 zip（内置 Camoufox 内核，新增目标地点区级筛选）→ [abclq/Boss-Claw Releases](https://github.com/abclq/Boss-Claw/releases/latest)**；Linux AppImage/deb 仍为 v2.5.4 |
+| **本 Fork 分支 v2.5.4** | **Windows x64 免安装 zip（内置 Camoufox 内核） + Linux AppImage + deb** |
 | v2.5.3 | Windows x64 安装版 + 便携版 · Linux AppImage / deb / tar.gz · macOS 源码自构建档案 |
 | v2.5.2 | Windows x64 安装版 + 便携版 |
 | v2.4.0 | Windows x64 安装版 + 便携版 |

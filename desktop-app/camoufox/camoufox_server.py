@@ -1555,6 +1555,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 # 设置页「基础求职条件」（全平台共用）：猎聘/智联/前程无忧 由 platforms.filters
                 # 翻译为各平台筛选参数（BOSS 走 searchUrl.ts + webview，此处忽略）。
                 criteria = body.get('criteria') if isinstance(body.get('criteria'), dict) else {}
+                # 区级筛选（['余杭区', ...]）：非 BOSS 平台采集后按 location 文本宽松过滤
+                districts = body.get('districts') if isinstance(body.get('districts'), list) else None
                 # 定向重新采集（「任务进度」页「开始/继续」）：忽略断点续采，强制重采
                 force = body.get('force') is True
                 if not query:
@@ -1562,7 +1564,7 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
                 if platform == 'boss':
                     result = search_jobs(query, city, pages, os_name)
                 else:
-                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria, force)
+                    result = platform_mods.search_jobs(platform, query, city, pages, os_name, criteria, force, districts=districts)
                 return self._send(200, result)
 
             if parsed.path == '/send':

@@ -166,11 +166,13 @@ export function camoufoxSearch(
   platform: string = 'boss',
   criteria?: Record<string, unknown>,
   force = false,
+  districts?: string[],
 ): Promise<CamoufoxSearchResult> {
   return camoufoxCall<CamoufoxSearchResult>('search', {
     query, city, pages, os: os || undefined, platform,
     criteria: criteria && Object.keys(criteria).length ? criteria : undefined,
     force: force || undefined,
+    districts: districts && districts.length ? districts : undefined,
   });
 }
 

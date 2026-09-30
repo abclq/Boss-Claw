@@ -65,6 +65,38 @@ def progress_store(config: Any = None, platform: str = '') -> ProgressStore:
     return ProgressStore(ttl_hours=ttl)
 
 
+def filter_by_districts(jobs: list, districts: list | None) -> list:
+    """区级过滤（宽松，宁可多召回不误杀）：采集后、断点记录前调用。
+
+    语义：
+      - districts 为空 → 不过滤（保持旧行为）；
+      - 岗位 location 命中任一所选区名 → 保留（精确命中）；
+      - 岗位 location 含「区」字但非目标区 → 丢弃（明确不匹配）；
+      - 岗位 location 为空 / 城市级（不含「区」字）→ 保留（交投递侧按区硬约束兜底）。
+
+    原因：智联/前程无忧列表接口只返回城市名（无区级），猎聘 dq 才带区级；
+    对无区级数据的平台，这里「保留」而非「误杀」，让 jobMatch 的地点硬约束兜底。
+    """
+    if not districts:
+        return jobs
+    targets = [str(d).strip() for d in districts if str(d).strip()]
+    if not targets:
+        return jobs
+    out = []
+    for job in jobs:
+        loc = str(getattr(job, 'location', '') or '').strip()
+        if not loc:
+            out.append(job)
+            continue
+        if any(t in loc for t in targets):
+            out.append(job)
+            continue
+        if '区' in loc:
+            continue
+        out.append(job)
+    return out
+
+
 class CollectorBase:
     """平台采集器基类：`search_jobs` / `deliver` / `do_login` 三个骨架的唯一实现。"""
 
@@ -141,8 +173,13 @@ class CollectorBase:
     # ============================================================
     def search_jobs(self, query: str, city: str, pages: int = 1,
                     os_name: str | None = None, criteria: dict | None = None,
-                    force: bool = False, config: dict | None = None) -> dict:
-        """隐身搜索骨架：接口拦截优先 + DOM 卡片兜底 + 断点续采。
+                    force: bool = False, config: dict | None = None,
+                    districts: list | None = None) -> dict:
+        """隐身搜索骨架：接口拦截优先 + DOM 卡片兜底 + 断点续采 + 区级过滤。
+
+        districts = 目标区名列表（如 ['余杭区', '西湖区']），采集后按 location 文本
+        宽松过滤（见 filter_by_districts）。区级同时纳入断点 key，改区后不会误命中
+        旧「城市级已采完」断点而漏采。
 
         force=True 时忽略断点强制重采（「定向重新采集」语义）。
         """
@@ -152,10 +189,17 @@ class CollectorBase:
         store = progress_store(self.config, self.platform)
         store.prune([query])
 
+        # 区级纳入断点 key：改区后不误命中旧「城市级已采完」断点（避免漏采新区岗位）
+        bp_city = city
+        if districts:
+            _ds = sorted({str(d).strip() for d in districts if str(d).strip()})
+            if _ds:
+                bp_city = f"{city}|{','.join(_ds)}"
+
         # 词级断点：TTL 内已整轮采完 → 直接跳过（不打开搜索页）
         if force:
-            store.clear_combo(self.platform, city, query)
-        elif store.completed_combo(self.platform, city, query):
+            store.clear_combo(self.platform, bp_city, query)
+        elif store.completed_combo(self.platform, bp_city, query):
             log('⏭️', f'[{self.platform}] {query} / {city}：{store.ttl_hours}h 内已采完，整词跳过（断点续采）')
             return {
                 'ok': True, 'code': 0, 'jobs': [], 'skipped': True,
@@ -231,10 +275,11 @@ class CollectorBase:
 
         if last_code in self.terminal_codes:
             # 风控/环境异常：整批作废 + 清除断点，下次重头采（宁重复不遗漏）
-            store.clear_combo(self.platform, city, query)
+            store.clear_combo(self.platform, bp_city, query)
             return {'ok': False, 'code': last_code, 'message': last_msg, 'jobs': []}
+        all_jobs = filter_by_districts(all_jobs, districts)
         if collected_pages >= pages:
-            store.mark_combo_done(self.platform, city, query, pages=collected_pages, count=len(all_jobs))
+            store.mark_combo_done(self.platform, bp_city, query, pages=collected_pages, count=len(all_jobs))
         return {'ok': True, 'code': 0, 'jobs': all_jobs, 'pages': collected_pages}
 
     def _collect_dom_cards(self, page) -> list:
