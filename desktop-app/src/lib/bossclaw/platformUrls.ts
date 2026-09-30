@@ -206,6 +206,8 @@ export interface PlatformSearchQueueItem {
   url: string;
   keyword: string;
   location: string;
+  /** 区级筛选（如 ['余杭区','西湖区']）：非 BOSS 平台采集后按 location 文本宽松过滤 */
+  districts?: string[];
   employmentType: string;
   /**
    * 「基础求职条件」原始条件（全平台共用一份设置）：传给 Camoufox 隐身采集，
@@ -294,7 +296,7 @@ export function buildPlatformSearchQueue(
         if (seen.has(url)) continue;
         seen.add(url);
         queue.push({
-          platform, url, keyword: '', location, employmentType, criteria,
+          platform, url, keyword: '', location, districts: entry?.districts, employmentType, criteria,
           directionId: '',
           directionName: RANDOM_COLLECT_LABEL,
           directionPriority: 0,
@@ -318,7 +320,7 @@ export function buildPlatformSearchQueue(
           if (seen.has(url)) continue;
           seen.add(url);
           queue.push({
-            platform, url, keyword, location, employmentType, criteria,
+            platform, url, keyword, location, districts: entry?.districts, employmentType, criteria,
             directionId: direction.id,
             directionName: direction.name,
             directionPriority: direction.priority,

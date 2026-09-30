@@ -1624,7 +1624,7 @@ export default function Workbench() {
       });
       lastCode = null; // 每组重置：故障范围判定与 catch 兜底只看本组结果，避免沿用上一组残留码
       try {
-        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria, forceRecheck);
+        const result = await camoufoxSearch(item.keyword, cityCode, cfx0.pages || 1, cfx0.os, platform, itemCriteria, forceRecheck, (item as PlatformSearchQueueItem).districts);
         if (result.skipped) {
           // 断点续采命中：既非失败、也非「无岗位」，单独记账便于用户理解「为什么没采」
           addLog('info', `「${keywordLabel(item.keyword)}」跳过本次采集：${result.message || '近期已采过（断点续采）'}`);

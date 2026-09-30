@@ -54,16 +54,18 @@ def supports(platform: str, capability: str) -> bool:
 
 def search_jobs(platform: str, query: str, city: str, pages: int = 1, os_name: str | None = None,
                 criteria: dict | None = None, force: bool = False,
-                config: dict | None = None) -> dict:
+                config: dict | None = None, districts: list | None = None) -> dict:
     """criteria = 设置页「基础求职条件」（全平台共用：城市/薪资/求职类型/学历/经验/公司规模），
     由 filters.build_filter_params 翻译成各平台自身筛选参数（见 filters.py 能力表）。
+
+    districts = 目标区名列表（['余杭区', ...]），采集后按 location 文本宽松过滤（见 base.filter_by_districts）。
 
     force=True 时忽略断点续采、强制重采（「定向重新采集」语义）。
     """
     p = str(platform or '').strip().lower()
     if not registry.registry.has(p):
         return {"ok": False, "code": 400, "message": f"不支持的平台：{platform}", "jobs": []}
-    return registry.registry.get(p).search_jobs(query, city, pages, os_name, criteria, force, config)
+    return registry.registry.get(p).search_jobs(query, city, pages, os_name, criteria, force, config, districts)
 
 
 def deliver(platform: str, job: dict, greeting: str, os_name: str | None = None,
