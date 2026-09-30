@@ -79,3 +79,71 @@ export function sameTargetLocations(a: unknown, b: unknown): boolean {
 export function profileTargetLocations(profile: Profile | null | undefined): string[] {
   return normalizeTargetLocations(profile?.hardConstraints?.locations);
 }
+
+// ==================== 区级条目（「城市·区」/「城市·区1/区2」）====================
+// BOSS 直聘搜索页原生支持区级筛选：URL 参数 multiBusinessDistrict（6 位行政区划码，
+// 逗号多选，如 multiBusinessDistrict=330110,330106）。2026-09 于杭州搜索页实测：
+// 城市级城市码 + 区级勾选后 URL 即携带该参数。
+// 条目写法（单条目标签内）：
+//   杭州            —— 全市
+//   杭州·余杭区      —— 城市 + 单区
+//   杭州·余杭区/西湖区 —— 城市 + 多区（「/」分隔；不能用顿号/逗号——那是条目间分隔符）
+//   杭州/余杭区/西湖区 —— 「/」亦可作城市与区的分隔（首个片段视为城市）
+// 区级信息同时参与 jobMatch 的地点硬约束：岗位 location 形如「杭州·余杭区·仓前」，
+// 命中规则 = 含城市名 且（未指定区 或 含任一所选区名）。
+
+/** 城市 / 区段分隔符：BOSS location 与条目写法统一用「·」（兼容「•」与「/」；「/」兼任条目内多区分隔） */
+const CITY_DISTRICT_SEPARATOR = /[·•/]/;
+
+/** 「目标城市」条目解析结果 */
+export interface ParsedLocationEntry {
+  /** 城市名（条目只写区时为 ''） */
+  city: string;
+  /** 所选区名列表（全市时为 []） */
+  districts: string[];
+  /** 原始条目文本 */
+  raw: string;
+}
+
+/**
+ * 解析单条目标地点条目为「城市 + 区列表」。
+ * 无法解析（空 / 未指定词）返回 null；纯区名条目 city 为 ''（仅参与硬约束，不生成搜索 URL）。
+ */
+export function parseLocationEntry(value: unknown): ParsedLocationEntry | null {
+  const raw = String(value ?? '').trim();
+  if (!raw || isNoCityFilter(raw)) return null;
+  const segments = raw
+    .split(CITY_DISTRICT_SEPARATOR)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!segments.length) return null;
+  const [city = '', ...districts] = segments;
+  return {
+    city,
+    districts: districts.filter((d) => d && !isNoCityFilter(d)),
+    raw,
+  };
+}
+
+/**
+ * 判断岗位地点是否命中一条目标条目。
+ * 岗位 location 形如「杭州·余杭区·仓前」/「浙江·杭州」/「杭州」：
+ *   · 条目含城市 → location 必须含城市名；
+ *   · 条目含区列表 → location 还须含任一所选区名（全市条目不设区要求）。
+ * 纯城市条目保持旧语义（locText.includes(city)），向后兼容。
+ */
+export function locationEntryMatchesJob(entry: string, jobLocation: string): boolean {
+  const parsed = parseLocationEntry(entry);
+  if (!parsed) return false;
+  const locText = String(jobLocation || '');
+  if (!locText) return false;
+  if (parsed.city && !locText.includes(parsed.city)) return false;
+  if (parsed.districts.length && !parsed.districts.some((d) => locText.includes(d))) return false;
+  return true;
+}
+
+/** 条目是否携带区级信息 */
+export function hasDistrictInfo(entry: string): boolean {
+  const parsed = parseLocationEntry(entry);
+  return !!parsed && parsed.districts.length > 0;
+}

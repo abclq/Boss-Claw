@@ -6,8 +6,11 @@
 //   experience-> 经验要求（108 在校生 / 102 应届生 / 103 1年以内 / 104 1-3年 / 105 3-5年 / 106 5-10年 / 107 10年以上）
 //   degree    -> 学历要求（202 大专 / 203 本科 / 204 硕士 / 205 博士 …）
 //   salary    -> 薪资区间（可选，见 SALARY_CODES）
+//   multiBusinessDistrict -> 区级筛选（2026-09 杭州搜索页实测：6 位行政区划码，逗号多选；
+//                            如 multiBusinessDistrict=330110,330106 = 余杭区+西湖区）
 import type { AppConfig, DirectionPlan } from './types';
 import { selectedDirectionItems } from './directions';
+import { parseLocationEntry } from './targetLocations';
 
 // 搜索列表页基地址
 export const BASE_JOBS_URL = 'https://www.zhipin.com/web/geek/jobs';
@@ -101,6 +104,27 @@ export const SCALE_CODES: Record<string, string> = {
   '500-999人': '304',
   '1000-9999人': '305',
   '10000人以上': '306',
+};
+
+// 区级筛选：multiBusinessDistrict 用 6 位行政区划码（GB/T 2260，与 BOSS 搜索页
+// 「工作区域」下拉生成的码一致，2026-09 实测杭州 330110 余杭区 / 330106 西湖区命中）。
+// 按城市分组内置常用城市；新区/新城市在此追加即可，写法 = 区名 → 6 位码。
+export const DISTRICT_CODES: Record<string, Record<string, string>> = {
+  杭州: {
+    上城区: '330102',
+    拱墅区: '330105',
+    西湖区: '330106',
+    滨江区: '330108',
+    萧山区: '330109',
+    余杭区: '330110',
+    富阳区: '330111',
+    临安区: '330112',
+    临平区: '330113',
+    钱塘区: '330114',
+    桐庐县: '330122',
+    淳安县: '330127',
+    建德市: '330182',
+  },
 };
 
 // 无明确求职类型时（不限 / 校招等）不附加 jobType 过滤
@@ -235,6 +259,35 @@ export function resolveScaleCode(scale?: string): string {
   return SCALE_CODES[s] || '';
 }
 
+/**
+ * 解析区级筛选为 multiBusinessDistrict 码列表（保持原顺序、去重）。
+ * 解析优先级：纯 6 位码直接透传 → 城市对应内置区表 → 全部区表兜底（区名跨市同名时
+ * 以城市表优先）。解析失败的区名丢弃（宁可多召回不误杀，与 filters.py 口径一致）。
+ */
+export function resolveDistrictCodes(city: string | undefined, districts: readonly string[]): string[] {
+  const out: string[] = [];
+  const cityTable = DISTRICT_CODES[String(city || '').replace(/市$/, '')] || {};
+  for (const raw of districts) {
+    const d = String(raw || '').trim();
+    if (!d || isNoFilter(d)) continue;
+    let code = '';
+    if (/^\d{6}$/.test(d)) {
+      code = d; // 已是行政区划码
+    } else if (cityTable[d]) {
+      code = cityTable[d];
+    } else {
+      for (const table of Object.values(DISTRICT_CODES)) {
+        if (table[d]) {
+          code = table[d];
+          break;
+        }
+      }
+    }
+    if (code && !out.includes(code)) out.push(code);
+  }
+  return out;
+}
+
 // 支持逗号分隔/数组的多个值（BOSS 的 experience / degree 参数接受逗号分隔多值）
 export function resolveExperienceCodes(experience?: string | string[]): string {
   const list = Array.isArray(experience) ? experience : String(experience || '').split(/[，,、]/);
@@ -249,6 +302,8 @@ export function resolveDegreeCodes(degree?: string | string[]): string {
 export interface JobSearchQuery {
   keyword?: string;
   city?: string;
+  /** 区级筛选（区名或 6 位行政区划码），经 resolveDistrictCodes 解析为 multiBusinessDistrict */
+  districts?: string[];
   jobType?: string;
   experience?: string | string[];
   degree?: string | string[];
@@ -264,6 +319,8 @@ export function buildJobSearchUrl(query: JobSearchQuery = {}): string {
   if (keyword) params.set('query', keyword);
   const city = resolveCityCode(query.city);
   if (city) params.set('city', city);
+  const districts = resolveDistrictCodes(query.city, query.districts ?? []);
+  if (districts.length) params.set('multiBusinessDistrict', districts.join(','));
   const jobType = resolveJobTypeCode(query.jobType);
   if (jobType) params.set('jobType', jobType);
   const experience = resolveExperienceCodes(query.experience);
@@ -312,13 +369,21 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
   const seen = new Set<string>();
 
   // 无关键字采集（设置 → 搜索采集范围控制）：URL 只删除 query（关键词）字段，
-  // 其余用户设置的筛选（城市 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模）保持不变，
+  // 其余用户设置的筛选（城市 / 区 / 求职类型 / 经验 / 学历 / 薪资 / 公司规模）保持不变，
   // 由平台按账号内已完善的求职意向返回推荐岗位 —— 避免同关键词反复重试拿到大量重复岗位。
   // 此时「投递方向」只提供关键词，故不再参与遍历（各方向会生成同一 URL，被 seen 天然去重）。
   if (config.collectWithoutKeyword) {
     for (const location of locations) {
       for (const employmentType of employmentTypes) {
-        const url = buildJobSearchUrl({ city: location, jobType: employmentType, experience, degree, scale });
+        const entry = parseLocationEntry(location);
+        const url = buildJobSearchUrl({
+          city: entry?.city || location,
+          districts: entry?.districts,
+          jobType: employmentType,
+          experience,
+          degree,
+          scale,
+        });
         if (seen.has(url)) continue;
         seen.add(url);
         queue.push({
@@ -343,9 +408,21 @@ export function buildSearchQueue(directionPlan: DirectionPlan | null, config: Ap
   // 城市优先遍历：完成当前城市全部关键词后再切下一城（对齐 AI-BossJob 的「多城市轮询」语义）
   for (const direction of directions) {
     for (const location of locations) {
+      // 条目支持区级写法（杭州·余杭区 / 杭州·余杭区/西湖区）：城市名进 city，区名进 multiBusinessDistrict
+      const entry = parseLocationEntry(location);
+      const cityPart = entry?.city || location;
+      const districts = entry?.districts ?? [];
       for (const keyword of direction.keywords) {
         for (const employmentType of employmentTypes) {
-          const url = buildJobSearchUrl({ keyword, city: location, jobType: employmentType, experience, degree, scale });
+          const url = buildJobSearchUrl({
+            keyword,
+            city: cityPart,
+            districts,
+            jobType: employmentType,
+            experience,
+            degree,
+            scale,
+          });
           if (seen.has(url)) continue;
           seen.add(url);
           queue.push({
