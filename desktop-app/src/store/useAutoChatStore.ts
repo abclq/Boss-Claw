@@ -25,6 +25,8 @@ import { generateReply } from '@/lib/bossclaw/greetings';
 import { rerankPending } from '@/lib/bossclaw/priority';
 import { platformEnabled, platformLabel, platformPriority, platformSupports } from '@/lib/bossclaw/platforms';
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
+import { greetingKey, replyKey, ledgerBegin, ledgerSettle, ledgerForget } from '@/lib/bossclaw/sendLedger';
+import { detectContactInfo } from '@/lib/bossclaw/resumeDesensitize';
 import type { PendingItem, ImageResume, JobPlatform } from '@/lib/bossclaw/types';
 
 type ChatJobOutcome = 'success' | 'failed' | 'stop' | 'continue';
@@ -65,15 +67,34 @@ interface EngineRun {
 }
 let nextRunToken = 0;                    // 单调递增：每次 start()/chatOne() 取新 token
 let currentRun: EngineRun | null = null; // 单一真值：null = 空闲（替代原 busy 互斥量 + ownerRun 归属）
+// H4：stop() 会立即置空 currentRun（UI 即刻可再点「开始」），但旧 run 可能仍卡在一次 await 的网络发送里。
+// liveRun 记录「异步循环尚未真正退出」的 run，直到其 finally 执行才清空；
+// start()/chatOne() 在旧循环收尾前拒绝启动，杜绝 stop→start 后两个引擎并发发送。
+let liveRun: EngineRun | null = null;
+
+/** run 是否已被取消：用户点了停止（cancelRequested），或已不再是当前 run（被 stop/新 run 作废） */
+function runCancelled(run: EngineRun): boolean {
+  return run.cancelRequested || currentRun !== run;
+}
 let pacer = new ActionPacer(SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE); // 跨 run 共享的动作节流器（预算重置在 start()）
 
 // ===== Camoufox 引擎自愈重启（误触关闭后自动拉起；多次失败自动停止）=====
 const MAX_ENGINE_RESTART = 3;
 const ENGINE_RESTART_WAIT_MS = 8000;
 
-/** 判定沟通结果是否因「Camoufox 引擎不可用 / 传输层故障」失败（无 BOSS 业务码失败）。 */
+/**
+ * 判定沟通结果是否因「Camoufox 引擎不可用」失败，且**确定未发出**（H5）。
+ * 旧实现把所有 `!ok && code == null` 都当成引擎宕机并重发——主进程 240s 超时、in-flight 拦截
+ * 也命中这条，而那些情况下消息很可能已经发出。现在只认主进程明确标注的 transport === 'not_sent'
+ * （引擎未就绪 / 依赖安装中 / 连接被拒 / 鉴权拒绝），超时等「结果未知」一律不重发。
+ */
 function looksEngineDown(r: CamoufoxChatResult): boolean {
-  return !r.ok && r.code == null && Boolean(r.error || r.message);
+  return !r.ok && r.code == null && r.transport === 'not_sent';
+}
+
+/** 发送结果是否「未知」（可能已发出）：超时 / 连接中途断开 / 服务端 5xx / 被 in-flight 锁拦下（在途那次未知） */
+function outcomeUnknown(r: CamoufoxChatResult): boolean {
+  return !r.ok && (r.transport === 'unknown' || Boolean(r.inFlight));
 }
 
 /**
@@ -83,11 +104,14 @@ function looksEngineDown(r: CamoufoxChatResult): boolean {
 async function chatWithEngineRecovery(
   send: () => Promise<CamoufoxChatResult>,
   jobTitle: string,
-  platform = 'boss'
-): Promise<{ result: CamoufoxChatResult; dead: boolean }> {
+  platform: string,
+  run: EngineRun
+): Promise<{ result: CamoufoxChatResult; dead: boolean; cancelled?: boolean }> {
   let result = await send();
   if (!looksEngineDown(result)) return { result, dead: false };
   for (let i = 1; i <= MAX_ENGINE_RESTART; i += 1) {
+    // H4：重启等待期间用户可能已停止 → 不再重试（上一次已确定未发出，直接收手）
+    if (runCancelled(run)) return { result, dead: false, cancelled: true };
     useRuntimeLogsStore.getState().addChatLog({
       level: 'warn',
       stage: 'system',
@@ -103,6 +127,7 @@ async function chatWithEngineRecovery(
       ready = false;
     }
     await sleep(ENGINE_RESTART_WAIT_MS);
+    if (runCancelled(run)) return { result, dead: false, cancelled: true };
     if (ready) {
       useRuntimeLogsStore.getState().addChatLog({
         level: 'info',
@@ -117,8 +142,51 @@ async function chatWithEngineRecovery(
   return { result, dead: true };
 }
 
-/** 单条岗位沟通（桥接 camoufox，逻辑与旧 useAutoChatEngine.chatJob 一致） */
-async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
+/**
+ * 带幂等账本的单次发送（H5）：
+ *  - 发送前 ledgerBegin：同 key 已有 sent / unknown / inflight 记录 → 不发送，返回 duplicate；
+ *  - 确认已发 → sent；结果未知（超时 / 中断 / 5xx / in-flight）→ unknown（永不自动重发）；
+ *  - 确定未发出（引擎未就绪、业务码拒绝、服务端明确返回失败）→ forget，允许之后重试。
+ */
+async function sendOnce(
+  key: string,
+  send: () => Promise<{ result: CamoufoxChatResult; dead: boolean; cancelled?: boolean }>
+): Promise<{ result: CamoufoxChatResult; dead: boolean; cancelled?: boolean; duplicate?: 'sent' | 'unknown' | 'inflight' }> {
+  const prior = ledgerBegin(key);
+  if (prior) return { result: { ok: false, error: '幂等拦截：相同消息已发送过或结果未知' }, dead: false, duplicate: prior.state };
+  let out: { result: CamoufoxChatResult; dead: boolean; cancelled?: boolean };
+  try {
+    out = await send();
+  } catch (e) {
+    ledgerSettle(key, 'unknown'); // 抛异常时无法判断是否已送达 → 按未知处理，宁可不重发
+    throw e;
+  }
+  const r = out.result;
+  if (r.ok && r.sent) ledgerSettle(key, 'sent');
+  else if (outcomeUnknown(r)) ledgerSettle(key, 'unknown');
+  else if (r.needsReply && !r.sent) ledgerForget(key); // 打招呼前发现 HR 已来消息（code 700）：招呼语未发，转 AI 跟聊
+  else ledgerForget(key);
+  return out;
+}
+
+/** 幂等拦截 / 结果未知时的统一处置：标记失败且不可自动重试，交人工到浏览器核对 */
+function markNeedsManualCheck(
+  item: PendingItem, jobId: string, title: string, company: string,
+  reason: 'sent' | 'unknown' | 'inflight' | 'timeout', what: string
+): ChatJobOutcome {
+  const { updatePending } = useDataStore.getState();
+  const { addChatLog, addLog } = useRuntimeLogsStore.getState();
+  const msg = reason === 'sent'
+    ? `${what}：相同内容此前已确认发送过，已拦截重复发送`
+    : `${what}：上一次发送结果未知（超时/中断/在途），为防重复已停止自动重发，请到浏览器核对该会话`;
+  updatePending(item.id, { status: 'failed', error: msg, retryable: false });
+  addChatLog({ level: 'warn', stage: 'confirm', jobId, jobTitle: title, company, msg: `🛡️ ${msg}` });
+  addLog('warn', `${msg}：${title}`);
+  return 'failed';
+}
+
+/** 单条岗位沟通（桥接 camoufox，逻辑与旧 useAutoChatEngine.chatJob 一致）。run = 发起本次沟通的运行（H4 取消信号来源） */
+async function chatJob(item: PendingItem, run: EngineRun): Promise<ChatJobOutcome> {
   const { updatePending } = useDataStore.getState();
   const { addLog, addChatLog } = useRuntimeLogsStore.getState();
   const cfg = useSettingsStore.getState().config;
@@ -129,6 +197,14 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
   if (!greeting) {
     updatePending(item.id, { status: 'failed', error: '招呼语为空，无法自动沟通，请补充后再试', retryable: true });
     addChatLog({ level: 'error', stage: 'greeting', jobTitle: title, company, msg: '沟通中断：岗位招呼语为空', errorDetail: '请编辑招呼语后重试' });
+    return 'failed';
+  }
+
+  // H7 发送前硬过滤：自动发送的招呼语含联系方式 / 链接 → 不发送，转人工（与 AI 跟聊同一口径）
+  const greetingPii = detectContactInfo(greeting);
+  if (greetingPii.length) {
+    updatePending(item.id, { status: 'failed', error: `招呼语含联系方式/链接（${greetingPii.join('、')}），已拦截自动发送，请编辑后人工发送`, retryable: false });
+    addChatLog({ level: 'error', stage: 'greeting', jobTitle: title, company, msg: `🛡️ 招呼语含联系方式/链接（${greetingPii.join('、')}），已拦截自动发送`, errorDetail: '安全规则：自动发送内容不得包含手机号、邮箱、微信、QQ、身份证号或链接' });
     return 'failed';
   }
 
@@ -166,9 +242,9 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
     // attach = 投递时补发简历附件 / 在线简历。当前仅 BOSS 聊天链路支持；
     // 其余平台 deliver() 会忽略这两个参数，故这里直接不下发，避免构造无用的 base64 负载。
     const canAttach = platformSupports(platform as JobPlatform, 'attach');
-    // P04：真正发送前检查取消信号——已用户停止，则不发送、不计成功，保留岗位待下次恢复
-    // （chatJob 仅由持有 currentRun 的 start()/chatOne() 调用，此处即本 run 的取消信号）
-    if (currentRun?.cancelRequested) {
+    // P04 / H4：真正发送前检查**本 run** 的取消信号（旧实现读 currentRun?.cancelRequested，
+    // 而 stop() 紧接着把 currentRun 置空 → 永远读到 undefined，停止后仍会再发一条）
+    if (runCancelled(run)) {
       addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送（用户已停止），岗位保留待下次恢复' });
       return 'stop';
     }
@@ -187,7 +263,16 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
       jobTitle: item.job?.title || '',
       resumeImages,
     };
-    const initial = await chatWithEngineRecovery(() => camoufoxChat(jobId, greeting, baseOpts), title, platform);
+    const initial = await sendOnce(
+      greetingKey(platform, jobId, greeting),
+      () => chatWithEngineRecovery(() => camoufoxChat(jobId, greeting, baseOpts), title, platform, run),
+    );
+      if (initial.duplicate) return markNeedsManualCheck(item, jobId, title, company, initial.duplicate, '打招呼语');
+      if (initial.cancelled) {
+        addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消（用户已停止，引擎重启期间未重发），岗位保留待下次恢复' });
+        return 'stop';
+      }
+      if (outcomeUnknown(initial.result)) return markNeedsManualCheck(item, jobId, title, company, 'timeout', '打招呼语');
       // Camoufox 引擎多次重启仍失败 → 自动停止自动沟通（不误触关闭即停，也不标记岗位为死失败）
       if (initial.dead) {
         updatePending(item.id, { status: 'failed', error: 'Camoufox 引擎多次重启失败，自动沟通已停止', retryable: true });
@@ -242,6 +327,11 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
     // 仅 BOSS 聊天链路支持（其余平台回复在平台 App 内人工跟进）
     if (platform === 'boss' && result.needsReply) {
       const hrMessage = String(result.hrLastMessage || '').trim();
+      // H4：AI 跟聊分支同样受停止信号约束（生成回复前 + 发送前各查一次）
+      if (runCancelled(run)) {
+        addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消 AI 跟聊（用户已停止）' });
+        return 'stop';
+      }
       addChatLog({
         level: 'stage',
         stage: 'ai_reply',
@@ -260,8 +350,15 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
         model: useSettingsStore.getState().config.model,
       });
       if (!reply.text) {
-        updatePending(item.id, { status: 'failed', error: 'HR 已回复但无法生成 AI 回复', retryable: true });
-        addChatLog({ level: 'error', stage: 'ai_reply', jobId, jobTitle: title, company, msg: 'AI 回复生成失败，已暂停该条' });
+        updatePending(item.id, { status: 'failed', error: reply.warning || 'HR 已回复但无法生成 AI 回复', retryable: true });
+        addChatLog({ level: 'error', stage: 'ai_reply', jobId, jobTitle: title, company, msg: reply.warning ? `🛡️ ${reply.warning}` : 'AI 回复生成失败，已暂停该条' });
+        return 'failed';
+      }
+      // H7 发送前硬过滤（纵深防御：generateReply 已过滤一次，这里对最终要发出的文本再查一次，含本地兜底文本）
+      const replyPii = detectContactInfo(reply.text);
+      if (replyPii.length) {
+        updatePending(item.id, { status: 'failed', error: `AI 回复含联系方式/链接（${replyPii.join('、')}），已拦截不发送，请人工回复`, retryable: false });
+        addChatLog({ level: 'error', stage: 'ai_reply', jobId, jobTitle: title, company, msg: `🛡️ AI 回复含联系方式/链接（${replyPii.join('、')}），已拦截不发送`, errorDetail: reply.text });
         return 'failed';
       }
       addChatLog({
@@ -273,10 +370,24 @@ async function chatJob(item: PendingItem): Promise<ChatJobOutcome> {
         msg: reply.method === 'ai' ? `AI 回复已生成：${reply.text.slice(0, 60)}...` : (reply.warning || 'AI 回复已生成'),
         errorDetail: reply.text,
       });
-      const replySend = await chatWithEngineRecovery(
-          async () => camoufoxChat(jobId, reply.text, { ...baseOpts, mode: 'reply', replyText: reply.text }),
-          title, platform
+      if (runCancelled(run)) {
+        addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消发送 AI 回复（用户已停止），回复未发出' });
+        return 'stop';
+      }
+      // 幂等键按「被回复的 HR 消息」：同一条 HR 消息只自动回复一次（模型两次生成的文本不同也拦）
+      const replySend = await sendOnce(
+          replyKey(platform, jobId, hrMessage || reply.text),
+          () => chatWithEngineRecovery(
+            async () => camoufoxChat(jobId, reply.text, { ...baseOpts, mode: 'reply', replyText: reply.text }),
+            title, platform, run
+          ),
         );
+        if (replySend.duplicate) return markNeedsManualCheck(item, jobId, title, company, replySend.duplicate, 'AI 跟聊回复');
+        if (replySend.cancelled) {
+          addChatLog({ level: 'warn', stage: 'system', jobId, jobTitle: title, company, msg: '⏹ 已取消 AI 回复（用户已停止，引擎重启期间未重发）' });
+          return 'stop';
+        }
+        if (outcomeUnknown(replySend.result)) return markNeedsManualCheck(item, jobId, title, company, 'timeout', 'AI 跟聊回复');
         if (replySend.dead) {
           updatePending(item.id, { status: 'failed', error: 'Camoufox 引擎多次重启失败，自动沟通已停止', retryable: true });
           addChatLog({
@@ -433,8 +544,14 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
 
   start: (scope?: AutoChatScope) => {
     if (currentRun || useAutoChatStore.getState().chatRunning) return;
+    if (liveRun) {
+      // H4：上一轮已被停止但仍在等待一次在途发送返回 → 拒绝启动，避免两个引擎并发
+      useRuntimeLogsStore.getState().addChatLog({ level: 'warn', stage: 'system', msg: '⏳ 上一轮自动沟通仍在收尾（等待在途请求返回），请稍后再点「开始」。' });
+      return;
+    }
     const run: EngineRun = { token: ++nextRunToken, processedIds: new Set<string>(), cancelRequested: false };
     currentRun = run; // 建立互斥（busy）：单一真值，null = 空闲
+    liveRun = run;
     const cfg = useSettingsStore.getState().config;
     const pacerMax = Math.max(1, Number(cfg.maxActionsPerMinute) || SAFETY_LIMITS.MAX_ACTIONS_PER_MINUTE);
     if (pacer.budget !== pacerMax) pacer = new ActionPacer(pacerMax);
@@ -554,10 +671,12 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           set({ activeChatId: item.id, progress: { index: run.processedIds.size, total: run.processedIds.size + eligible.length } });
           try {
             await pacer.waitForSlot();
+            if (runCancelled(run)) break; // H4：每个 await 回来都复查 run 是否仍有效
             const baseSec = Math.max(Number(nowCfg.betweenJobsSeconds) || 15, SAFETY_LIMITS.MIN_BETWEEN_JOBS_MS / 1000);
             await sleep(baseSec * 1000 * (0.7 + Math.random() * 0.6));
+            if (runCancelled(run)) break;
 
-            const outcome = await chatJob(item);
+            const outcome = await chatJob(item, run);
             if (outcome === 'success') {
               sentCount += 1;
               if (nowCfg.requireSingleJobValidation && !nowCfg.singleJobValidationCompletedAt) {
@@ -579,6 +698,7 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
           }
         }
       } finally {
+        if (liveRun === run) liveRun = null; // H4：本循环真正退出，允许下一轮启动
         // 仅当本运行仍是 currentRun 时才复位（原 busy/ownerRun 的配对检查被引用相等替代），
         // 避免 stop()→start() 或旧运行回写串台；token 单调递增，旧 run 的引用必然失配。
         if (currentRun === run) {
@@ -599,13 +719,19 @@ export const useAutoChatStore = create<AutoChatState>((set) => ({
 
   chatOne: (item) => {
     if (currentRun || useAutoChatStore.getState().chatRunning) return;
+    if (liveRun) {
+      useRuntimeLogsStore.getState().addChatLog({ level: 'warn', stage: 'system', msg: '⏳ 上一轮自动沟通仍在收尾（等待在途请求返回），请稍后再试。' });
+      return;
+    }
     const run: EngineRun = { token: ++nextRunToken, processedIds: new Set<string>(), cancelRequested: false };
     currentRun = run;
+    liveRun = run;
     set({ chatRunning: true, activeChatId: item.id, progress: { index: 0, total: 1 } });
     void (async () => {
       try {
-        await chatJob(item);
+        await chatJob(item, run);
       } finally {
+        if (liveRun === run) liveRun = null;
         if (currentRun === run) {
           currentRun = null;
           set({ activeChatId: null, chatRunning: false, progress: { index: 0, total: 0 } });

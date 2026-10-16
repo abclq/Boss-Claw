@@ -40,6 +40,9 @@ export const STORAGE_KEYS: StorageKeySpec[] = [
   // 运行时日志（P2-05）：从 bossclaw-data 拆出的独立小键。日志为运行时产物、重启即重新累积，
   // 不导出不备份；「清空全部数据/恢复出厂」时随业务数据一并清除
   { key: 'bossclaw-runtime-logs', export: false, backup: false, clear: true },
+  // 发送幂等账本（H5）：按 平台+jobId+内容指纹 记录发送尝试，防止重启/超时后重复发送。
+  // 独立于 pending（删记录不会遗忘），不导出不备份；「清空全部」时随业务数据清除
+  { key: 'bossclaw-send-ledger-v1', export: false, backup: false, clear: true },
 ] as const;
 
 export const keysWhere = (pred: (s: StorageKeySpec) => boolean): string[] =>

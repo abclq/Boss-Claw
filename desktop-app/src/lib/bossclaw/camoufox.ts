@@ -105,6 +105,14 @@ export interface CamoufoxChatResult {
   /** HR 最新一条消息文本（用于生成 AI 回复） */
   hrLastMessage?: string;
   error?: string;
+  /**
+   * 传输层结论（H5，由主进程 jc:camoufox-call 标注）：
+   *  - not_sent：请求根本没送达桥（引擎未就绪 / 依赖安装中 / 连接被拒）→ 消息确定未发出，可安全重试
+   *  - unknown ：请求已送达但没拿到结果（超时 / 连接中途断开）→ 消息可能已发出，**禁止自动重发**
+   */
+  transport?: 'not_sent' | 'unknown';
+  /** 渲染层 in-flight 锁拦截（同一岗位已有请求在途）：本次未发送，但在途那次结果未知 */
+  inFlight?: boolean;
 }
 
 export interface CamoufoxLoginResult {
@@ -132,7 +140,7 @@ export async function camoufoxCall<T = any>(action: CamoufoxAction, payload?: Re
   const platform = typeof payload?.platform === 'string' && payload.platform ? payload.platform : 'boss';
   const key = `${action}:${platform}:${typeof payload?.jobId === 'string' && payload.jobId ? payload.jobId : 'global'}`;
   if (CAMOUFOX_IN_FLIGHT.has(key)) {
-    return ({ ok: false, error: '同一岗位/动作正在执行中，已阻止重复操作' }) as T;
+    return ({ ok: false, inFlight: true, error: '同一岗位/动作正在执行中，已阻止重复操作' }) as T;
   }
   CAMOUFOX_IN_FLIGHT.add(key);
   try {

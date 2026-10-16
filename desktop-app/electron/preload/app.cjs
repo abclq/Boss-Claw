@@ -66,6 +66,9 @@ const api = {
   // CORS 无关的 URL 抓取（主进程转发，供获取 BOSS 公开接口如城市编码表）
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),
 
+  // OpenClaw 本地桥接（H2）：主进程持有随机 token 并代理请求；route 须在主进程白名单内
+  bridgeCall: (route, method, body, timeoutMs) => ipcRenderer.invoke('jc:bridge-call', route, method, body, timeoutMs),
+
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
   llmProxy: (url, payload, apiKey, timeoutMs) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs),
 

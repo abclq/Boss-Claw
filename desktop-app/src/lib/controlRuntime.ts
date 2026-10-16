@@ -63,7 +63,17 @@ interface ControlResult {
 }
 
 /** 禁止通过 patchConfig 直接改写的字段（走专用动作或会破坏安全语义） */
-const CONFIG_DENY = new Set(['model', 'pausedUntil', 'platforms']);
+// M1：agent（MCP / 控制桥）不得经 patchConfig 修改安全相关字段——
+// executionMode（否则可自行打开「全自动」绕过 deliverySendNow 的人工门控）、
+// 限速 / 每日上限 / 冷却 / 首条验收等安全阈值，只能由用户在应用内设置。
+const CONFIG_DENY = new Set([
+  'model', 'pausedUntil', 'platforms',
+  'executionMode',
+  'maxActionsPerMinute', 'betweenJobsSeconds', 'maxDailySent', 'dailyTarget', 'companyDailyLimit',
+  'maxJobsPerRun', 'discoveryLimit', 'aiLimit',
+  'autoCooldownMinutes', 'requireSingleJobValidation', 'singleJobValidationCompletedAt',
+  'sendResumeImage', 'sendOnlineResume', 'attachmentDelaySeconds',
+]);
 
 /** agent 代答长轮询上限：agent 一次调用最多等这么久（避免客户端工具超时） */
 const AGENT_TASKS_MAX_WAIT_MS = 55_000;

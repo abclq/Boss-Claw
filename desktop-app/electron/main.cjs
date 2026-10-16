@@ -8,6 +8,7 @@ const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, na
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFile } = require('node:child_process');
+const crypto = require('node:crypto');
 // 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
 
@@ -333,7 +334,19 @@ let controlBridge = null;
 // Camoufox 隐身引擎：本地 Python 桥（camoufox_server.py），端口 18767
 let camoufoxProcess = null;
 const CAMOUFOX_PORT = 18767;
-const CAMOUFOX_TOKEN = 'bossclaw-camoufox';
+// H1：token 每次启动随机生成（旧值 'bossclaw-camoufox' 写死在开源仓库，任意网页/本机进程可伪造调用 /send /chat）。
+// 只经环境变量下发给子进程（不进 argv，避免被进程列表看到），请求时放 X-BossClaw-Token 头（不进 URL）。
+const CAMOUFOX_TOKEN = crypto.randomBytes(32).toString('hex');
+/** Camoufox 桥请求头：token + JSON（服务端强制校验 Content-Type / Host / 无 Origin） */
+const camoufoxHeaders = (json = false) => ({
+  'X-BossClaw-Token': CAMOUFOX_TOKEN,
+  ...(json ? { 'Content-Type': 'application/json' } : {}),
+});
+
+// H2：OpenClaw 桥 token 同理，运行时随机生成，经环境变量下发；渲染层不再持有 token，统一走 jc:bridge-call
+const BRIDGE_PORT = 18765;
+const BRIDGE_TOKEN = crypto.randomBytes(32).toString('hex');
+const BRIDGE_ROUTES = new Set(['/status', '/logs', '/report', '/command', '/ocr', '/resume-text']);
 
 // ===== 数据版本标记：v3 重建后首次启动自动清空旧数据（BOSS 登录态 / 隐身引擎数据）=====
 // 本次「内置浏览器 + 收集投递沟通模块」从零重建，旧登录态与缓存需清空（用户需重新扫码登录）。
@@ -375,7 +388,7 @@ function startBridge() {
     const child = spawn(process.execPath, [server], {
       stdio: 'ignore',
       detached: false,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', BOSSCLAW_BRIDGE_TOKEN: BRIDGE_TOKEN },
     });
     bridgeProcess = child;
     child.on('error', (err) => dlog('warn', 'bridge process error', { message: err?.message }));
@@ -568,9 +581,9 @@ async function startCamoufoxBridge(pythonOverride) {
     const server = path.join(__dirname, '..', 'camoufox', 'camoufox_server.py');
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
     // 会被拦截导致 camoufox fetch 等清理逻辑失败；spawn 时剥离该注入，不影响正常用户环境。
-    const env = { ...process.env };
+    const env = { ...process.env, BOSSCLAW_CAMOUFOX_TOKEN: CAMOUFOX_TOKEN };
     if (String(env.PYTHONPATH || '').includes('vendor/shim')) delete env.PYTHONPATH;
-    camoufoxProcess = spawn(python, [server, '--port', String(CAMOUFOX_PORT), '--token', CAMOUFOX_TOKEN], {
+    camoufoxProcess = spawn(python, [server, '--port', String(CAMOUFOX_PORT)], {
       stdio: 'ignore',
       detached: false,
       windowsHide: true,
@@ -588,7 +601,7 @@ async function startCamoufoxBridge(pythonOverride) {
       const deadline = Date.now() + 6000;
       const probe = async () => {
         try {
-          const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}`, { signal: AbortSignal.timeout(1200) });
+          const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status`, { headers: camoufoxHeaders(), signal: AbortSignal.timeout(1200) });
           if (res.ok) return resolve(true);
         } catch {}
         if (Date.now() > deadline) return resolve(false);
@@ -662,7 +675,7 @@ safeHandle('jc:camoufox-status', async (_event, platform) => {
     if (!r.running) return { ...base, running: false, ready: false, message: r.error || '桥启动失败' };
   }
   try {
-    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}&platform=${encodeURIComponent(pf)}`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?platform=${encodeURIComponent(pf)}`, { headers: camoufoxHeaders(), signal: AbortSignal.timeout(3000) });
     const data = await res.json();
     return { ...base, running: true, ready: Boolean(data.ok), message: data.message || '', engine: data };
   } catch (e) {
@@ -694,7 +707,7 @@ safeHandle('jc:camoufox-restart', async (_event, platform) => {
     return { python: Boolean(readyPython), camoufox: true, running: false, ready: false, message: r.error || '桥重启失败' };
   }
   try {
-    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?token=${CAMOUFOX_TOKEN}&platform=${encodeURIComponent(pf)}`, { signal: AbortSignal.timeout(3000) });
+    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}/status?platform=${encodeURIComponent(pf)}`, { headers: camoufoxHeaders(), signal: AbortSignal.timeout(3000) });
     const data = await res.json();
     return { python: Boolean(readyPython), camoufox: true, running: true, ready: Boolean(data.ok), message: data.message || '', engine: data };
   } catch (e) {
@@ -704,31 +717,49 @@ safeHandle('jc:camoufox-restart', async (_event, platform) => {
 
 // 渲染层调用隐身引擎桥（search/send/login），统一转发 127.0.0.1 请求
 safeHandle('jc:camoufox-call', async (_event, action, payload) => {
+  // H5：给每个失败结果标注传输层结论 transport —— 渲染层据此区分
+  //   not_sent（请求没送达桥，消息确定未发出，可安全重试）与 unknown（已送达但没拿到结果，禁止自动重发）。
+  const notSent = (error, extra = {}) => ({ ok: false, transport: 'not_sent', error, ...extra });
   const python = await detectPython();
-  if (!python) return { ok: false, error: '未检测到 Python 环境' };
+  if (!python) return notSent('未检测到 Python 环境');
   const env = await ensureCamoufoxDeps(python);
-  if (env.installing) return { ok: false, installing: true, error: env.message || '隐身引擎依赖安装中，请稍候再试' };
+  if (env.installing) return notSent(env.message || '隐身引擎依赖安装中，请稍候再试', { installing: true });
   const readyPython = env.python || python;
   const available = await checkCamoufoxEngine(readyPython);
-  if (!available) return { ok: false, error: '隐身引擎未就绪（本地浏览器不可复用，请安装 Camoufox 隐身引擎内核）' };
+  if (!available) return notSent('隐身引擎未就绪（本地浏览器不可复用，请安装 Camoufox 隐身引擎内核）');
   if (!camoufoxProcess) {
     const r = await startCamoufoxBridge(readyPython);
-    if (!r.running) return { ok: false, error: r.error || '桥启动失败' };
+    if (!r.running) return notSent(r.error || '桥启动失败');
   }
   const pathMap = { search: '/search', send: '/send', chat: '/chat', login: '/login', logout: '/logout', clear: '/clear', platforms: '/platforms', progress: '/collection-progress' };
   const apiPath = pathMap[action];
-  if (!apiPath) return { ok: false, error: `unknown action: ${action}` };
+  if (!apiPath) return notSent(`unknown action: ${action}`);
+  let res;
   try {
-    const res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}${apiPath}?token=${CAMOUFOX_TOKEN}`, {
+    res = await fetch(`http://127.0.0.1:${CAMOUFOX_PORT}${apiPath}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: camoufoxHeaders(true),
       body: JSON.stringify(payload || {}),
       signal: AbortSignal.timeout((action === 'login' ? 360 : 240) * 1000),
     });
-    return await res.json();
   } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
+    const msg = String((e && e.message) || e);
+    const causeCode = String((e && e.cause && e.cause.code) || '');
+    // 连接被拒 / 地址不可达：请求没进桥 → 确定未发出；其余（超时、连接中途断开）→ 结果未知
+    const refused = /ECONNREFUSED|EADDRNOTAVAIL|ENOTFOUND/.test(causeCode);
+    return { ok: false, transport: refused ? 'not_sent' : 'unknown', error: msg };
   }
+  // 鉴权/格式被拒（403/415/400）：服务端在执行动作前就返回 → 确定未发出
+  // 5xx：服务端执行中抛异常，动作可能已部分完成 → 结果未知
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    return { ok: false, transport: res.status >= 500 ? 'unknown' : 'not_sent', error: `bad response (HTTP ${res.status})` };
+  }
+  if (res.status === 403 || res.status === 415) return { ...(data || {}), ok: false, transport: 'not_sent' };
+  if (res.status >= 500) return { ...(data || {}), ok: false, transport: 'unknown' };
+  return data;
 });
 
 async function createMainWindow() {
@@ -1638,6 +1669,29 @@ ipcMain.on('jc:webview-input', (event, payload) => {
 ipcMain.on('jc:bridge-control', (_event, type) => {
   if (type === 'start' && !bridgeProcess) startBridge();
   if (type === 'stop' && bridgeProcess) { try { bridgeProcess.kill(); } catch {} bridgeProcess = null; }
+});
+
+// H2：OpenClaw 桥统一由主进程代理（渲染层不持有 token、不直连 127.0.0.1，桥也因此不再需要 CORS）。
+// 路由白名单 + 方法白名单；token 只在主进程内存里。
+safeHandle('jc:bridge-call', async (_event, route, method, body, timeoutMs) => {
+  const r = String(route || '');
+  if (!BRIDGE_ROUTES.has(r)) return { ok: false, error: `unknown bridge route: ${r}` };
+  const m = String(method || 'GET').toUpperCase();
+  if (m !== 'GET' && m !== 'POST') return { ok: false, error: `unsupported method: ${m}` };
+  const hasBody = m === 'POST';
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}${r}`, {
+      method: m,
+      headers: { 'X-BossClaw-Token': BRIDGE_TOKEN, ...(hasBody ? { 'Content-Type': 'application/json' } : {}) },
+      body: hasBody ? JSON.stringify(body ?? {}) : undefined,
+      signal: AbortSignal.timeout(Math.min(Math.max(Number(timeoutMs) || 15000, 1000), 60000)),
+    });
+    return await res.json();
+  } catch (e) {
+    // 桥未启动 / 超时：返回 unavailable 标记（不 throw，避免 15s 心跳在 safeHandle 里刷 error 日志），
+    // 渲染层 bridgeClient 据此按「未连接」处理，与旧版直连 fetch 失败语义一致
+    return { ok: false, unavailable: true, error: String((e && e.message) || e) };
+  }
 });
 
 // 说明：不启用 app.requestSingleInstanceLock()——该 API 在部分受限/沙箱环境下

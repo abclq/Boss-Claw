@@ -11,11 +11,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Card, Space, Tag, Typography, message, Spin, Tooltip } from 'antd';
 import { ApiOutlined, PlayCircleOutlined, PauseCircleOutlined, StopOutlined, FileTextOutlined, UploadOutlined, CloseCircleFilled } from '@ant-design/icons';
 import { useAppStore } from '@/store/useAppStore';
+import { bridgeCall } from '@/lib/bridgeClient';
 
 const { Paragraph, Text } = Typography;
-const BRIDGE_PORT = 18765;
-const BRIDGE_TOKEN = 'bossclaw-desktop-bridge';
-const base = `http://127.0.0.1:${BRIDGE_PORT}`;
 
 export default function OpenClaw() {
   const [status, setStatus] = useState<any>(null);
@@ -27,16 +25,11 @@ export default function OpenClaw() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const setBridgeStatus = useAppStore((s) => s.setBridgeStatus);
 
-  const call = async (route: string, method = 'GET', body?: any) => {
-    const url = `${base}${route}?token=${BRIDGE_TOKEN}`;
-    // P30：桥接 HTTP 超时兜底——本地桥半开（端口占用但无响应）时避免请求永久挂起
-    const res = await fetch(url, {
-      method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(15000),
-    });
-    return res.json();
+  // H2：经主进程代理调用桥（token 不在渲染层；P30 的 15s 超时由主进程强制）
+  const call = async (route: string, method: 'GET' | 'POST' = 'GET', body?: any) => {
+    const data = await bridgeCall(route, body ? 'POST' : method, body, 15000);
+    if (!data || typeof data !== 'object') throw new Error('bridge unavailable');
+    return data;
   };
 
   const refresh = async () => {

@@ -9,8 +9,24 @@ const path = require('path');
 const os = require('os');
 const { URL } = require('url');
 const { execFile, execFileSync } = require('child_process');
+const crypto = require('crypto');
 
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+// H2：token 不再写死在 config.json（开源仓库可见）——由主进程每次启动随机生成，经环境变量下发。
+// 未提供 token 时拒绝启动（fail closed），绝不回落到固定口令。
+const BRIDGE_TOKEN = String(process.env.BOSSCLAW_BRIDGE_TOKEN || '');
+if (BRIDGE_TOKEN.length < 32) {
+  console.error('[OpenClaw bridge] 缺少 BOSSCLAW_BRIDGE_TOKEN（须由主进程随机生成下发），拒绝启动');
+  process.exit(2);
+}
+const ALLOWED_HOSTS = new Set([`127.0.0.1:${config.port}`, `localhost:${config.port}`]);
+
+/** 常量时间比较，避免按字节短路泄露 token */
+function tokenMatches(given) {
+  const a = Buffer.from(String(given || ''), 'utf8');
+  const b = Buffer.from(BRIDGE_TOKEN, 'utf8');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 const dataDir = path.join(os.homedir(), '.bossclaw');
 const databasePath = path.join(dataDir, 'data.json');
 fs.mkdirSync(dataDir, { recursive: true });
@@ -120,29 +136,45 @@ async function parseResumeText(payload) {
   return parseResumePdf(payload);
 }
 
-function respond(response, status, payload, origin) {
+function respond(response, status, payload) {
+  // H2：不再下发任何 CORS 头（旧实现原样反射 Origin + Allow-Private-Network，任意网页可跨域读取）。
+  // 本服务只供主进程（Node fetch，无 Origin）调用，浏览器跨域读取一律被同源策略拦下。
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': origin || 'null',
-    'Access-Control-Allow-Headers': 'content-type',
-    'Access-Control-Allow-Private-Network': 'true',
     'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
   });
   response.end(JSON.stringify(payload));
 }
 
 const server = http.createServer((request, response) => {
   const requestUrl = new URL(request.url, `http://127.0.0.1:${config.port}`);
-  const origin = request.headers.origin || '';
-  const token = requestUrl.searchParams.get('token') || '';
-  if (request.method === 'OPTIONS') return respond(response, 200, {}, origin);
-  if (token !== config.token) return respond(response, 403, { ok: false, error: 'token denied' }, origin);
+  // H2 鉴权（顺序：Host → Origin → token → Content-Type）
+  // 1) Host 白名单：挡 DNS rebinding（攻击域名解析到 127.0.0.1 时 Host 为攻击域名）
+  if (!ALLOWED_HOSTS.has(String(request.headers.host || '').toLowerCase())) {
+    return respond(response, 403, { ok: false, error: 'host denied' });
+  }
+  // 2) 浏览器发起的请求一律带 Origin；主进程 Node fetch 不带 → 有 Origin 即拒（含预检 OPTIONS）
+  if (request.headers.origin !== undefined || request.method === 'OPTIONS') {
+    return respond(response, 403, { ok: false, error: 'origin denied' });
+  }
+  // 3) token 只认请求头（不再接受 URL query，避免进日志 / Referer）
+  if (!tokenMatches(request.headers['x-bossclaw-token'])) {
+    return respond(response, 403, { ok: false, error: 'token denied' });
+  }
+  // 4) 有请求体的方法必须是 application/json（挡 text/plain「简单请求」CSRF）
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const ct = String(request.headers['content-type'] || '').toLowerCase();
+    if (!ct.startsWith('application/json')) {
+      return respond(response, 415, { ok: false, error: 'content-type must be application/json' });
+    }
+  }
 
   let body = '';
   let tooLarge = false;
   request.on('data', (chunk) => { body += chunk; if (body.length > 28 * 1024 * 1024) tooLarge = true; });
   request.on('end', async () => {
-    if (tooLarge) return respond(response, 413, { ok: false, error: 'request too large' }, origin);
+    if (tooLarge) return respond(response, 413, { ok: false, error: 'request too large' });
     try {
       const database = loadDatabase();
       const payload = body ? JSON.parse(body) : {};
@@ -151,16 +183,16 @@ const server = http.createServer((request, response) => {
           ok: true, name: 'bossclaw-bridge', version: '2.0.0', running: database.control.running, paused: database.control.paused,
           parsers: { pdftotext: commandExists('pdftotext') },
           databasePath, events: database.events.length,
-        }, origin);
+        });
       }
       if (requestUrl.pathname === '/logs') {
         // 桥接日志查看：最近的指令与事件（时间倒序，各最多 50 条）
         const commands = (database.commands || []).slice(-50).reverse();
         const events = (database.events || []).slice(-50).reverse();
-        return respond(response, 200, { ok: true, commands, events }, origin);
+        return respond(response, 200, { ok: true, commands, events });
       }
       if (requestUrl.pathname === '/report') {
-        return respond(response, 200, { ok: true, report: buildReport(database) }, origin);
+        return respond(response, 200, { ok: true, report: buildReport(database) });
       }
       if (requestUrl.pathname === '/command') {
         const type = String(payload.type || 'status');
@@ -169,31 +201,31 @@ const server = http.createServer((request, response) => {
         else if (type === 'stop') { database.control.running = false; database.control.paused = false; }
         else if (type === 'restore') {
           const snapshot = database.snapshots.at(-1);
-          return respond(response, 200, { ok: true, snapshot: snapshot || null }, origin);
+          return respond(response, 200, { ok: true, snapshot: snapshot || null });
         }
         database.commands.push({ type, ts: Date.now() });
         saveDatabase(database);
-        return respond(response, 200, { ok: true, control: database.control }, origin);
+        return respond(response, 200, { ok: true, control: database.control });
       }
       if (requestUrl.pathname === '/ocr') {
         try {
           const result = await parseResumePdf(payload);
-          return respond(response, 200, result, origin);
+          return respond(response, 200, result);
         } catch (error) {
-          return respond(response, 200, { ok: false, error: error.message }, origin);
+          return respond(response, 200, { ok: false, error: error.message });
         }
       }
       if (requestUrl.pathname === '/resume-text') {
         try {
           const result = await parseResumeText(payload);
-          return respond(response, 200, result, origin);
+          return respond(response, 200, result);
         } catch (error) {
-          return respond(response, 200, { ok: false, error: error.message }, origin);
+          return respond(response, 200, { ok: false, error: error.message });
         }
       }
-      return respond(response, 404, { ok: false, error: 'not found' }, origin);
+      return respond(response, 404, { ok: false, error: 'not found' });
     } catch (error) {
-      return respond(response, 500, { ok: false, error: error.message }, origin);
+      return respond(response, 500, { ok: false, error: error.message });
     }
   });
 });

@@ -10,6 +10,8 @@ interface ElectronBridgeApi {
   bossLogin?: () => Promise<unknown>;
   bossLogout?: (platform: string) => Promise<{ ok: boolean; removed?: number; error?: string }>;
   webviewPreload?: string;
+  // OpenClaw 本地桥接代理（主进程持 token；route ∈ /status /logs /report /command /ocr /resume-text）
+  bridgeCall?: (route: string, method?: 'GET' | 'POST', body?: unknown, timeoutMs?: number) => Promise<any>;
   invoke?: (channel: string, ...args: unknown[]) => Promise<unknown>;
   send?: (channel: string, ...args: unknown[]) => void;
   on?: (channel: string, callback: (...args: unknown[]) => void) => () => void;

@@ -23,14 +23,21 @@ BossClaw 隐身引擎 —— 本地 Python 桥服务（仅 Camoufox 原生隐身
   - 只降低「正常操作被误判为机器人（code 37）」的概率，不绕过验证码 / 账户验证
   - 招呼语非空校验；发送间隔由渲染层限速器控制
 
-协议：HTTP + token（默认 127.0.0.1:18767）
+协议：HTTP（默认 127.0.0.1:18767），鉴权见 CamoufoxHandler._authorize：
+  - token 只认请求头 X-BossClaw-Token（不接受 URL query）
+  - token 由 Electron 主进程每次启动随机生成，经环境变量 BOSSCLAW_CAMOUFOX_TOKEN 下发；
+    手动调试可用 --token 传入；两者都没有时随机生成并打印到 stderr（绝不回落固定口令）
+  - Host 必须是 127.0.0.1/localhost:<port>（挡 DNS rebinding）；带 Origin 的请求一律拒绝（挡浏览器跨站调用）
+  - POST 必须 Content-Type: application/json（挡 text/plain「简单请求」CSRF）
 用法：python camoufox_server.py [--port 18767] [--token xxx]
 """
 
 import argparse
+import hmac
 import json
 import os
 import random
+import secrets
 import re
 import sys
 import time
@@ -1522,14 +1529,36 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _authorize(self, require_json: bool) -> bool:
+        """H1 鉴权。失败时已写出 4xx 响应并返回 False。
+        顺序：Host → Origin → token（请求头，常量时间比较）→ Content-Type。"""
+        host = str(self.headers.get('Host') or '').strip().lower()
+        if host not in self.server.allowed_hosts:
+            self._send(403, {"ok": False, "error": "host denied"})
+            return False
+        # 浏览器发起的请求一律带 Origin；主进程 Node fetch 不带 → 有 Origin 即拒
+        if self.headers.get('Origin') is not None:
+            self._send(403, {"ok": False, "error": "origin denied"})
+            return False
+        given = str(self.headers.get('X-BossClaw-Token') or '')
+        if not hmac.compare_digest(given.encode('utf-8'), self.server.token.encode('utf-8')):
+            self._send(403, {"ok": False, "error": "token denied"})
+            return False
+        if require_json:
+            ctype = str(self.headers.get('Content-Type') or '').lower()
+            if not ctype.startswith('application/json'):
+                self._send(415, {"ok": False, "error": "content-type must be application/json"})
+                return False
+        return True
+
     def do_OPTIONS(self):
-        self._send(200, {})
+        # 不响应 CORS 预检：本服务只供 Electron 主进程调用
+        self._send(403, {"ok": False, "error": "origin denied"})
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        token = parse_qs(parsed.query).get('token', [''])[0]
-        if token != self.server.token:
-            return self._send(403, {"ok": False, "error": "token denied"})
+        if not self._authorize(require_json=False):
+            return
         if parsed.path == '/status':
             platform = (parse_qs(parsed.query).get('platform', ['boss'])[0] or 'boss').strip()
             payload = engine_status(platform)
@@ -1538,9 +1567,8 @@ class CamoufoxHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        token = parse_qs(parsed.query).get('token', [''])[0]
-        if token != self.server.token:
-            return self._send(403, {"ok": False, "error": "token denied"})
+        if not self._authorize(require_json=True):
+            return
         body = self._read_body()
         platform = str(body.get('platform') or 'boss').strip().lower() or 'boss'
         if platform not in PLATFORMS:
@@ -1795,7 +1823,8 @@ def engine_status(platform: str = 'boss') -> dict:
 def main():
     parser = argparse.ArgumentParser(description='BossClaw Camoufox 隐身引擎桥')
     parser.add_argument('--port', type=int, default=18767)
-    parser.add_argument('--token', default='bossclaw-camoufox')
+    # 不再提供固定默认 token（旧默认 'bossclaw-camoufox' 公开在仓库里）
+    parser.add_argument('--token', default=None)
     args = parser.parse_args()
 
     # 首次运行自举：确保 Python 依赖（camoufox/playwright）可用
@@ -1808,8 +1837,15 @@ def main():
               f"cookies={'✅' if status['cookieCount'] else '—'}")
     log('📦', status['message'])
 
+    token = args.token or os.environ.get('BOSSCLAW_CAMOUFOX_TOKEN') or ''
+    if len(token) < 32:
+        if token:
+            log('⚠️', 'token 过短（<32），已改为随机生成')
+        token = secrets.token_hex(32)
+        print(f'[camoufox] 未提供 token，本次随机 token：{token}', file=sys.stderr, flush=True)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), CamoufoxHandler)
-    server.token = args.token
+    server.token = token
+    server.allowed_hosts = {f'127.0.0.1:{args.port}', f'localhost:{args.port}'}
     log('🚀', f'隐身引擎桥 listening on 127.0.0.1:{args.port} (v{VERSION})')
     try:
         server.serve_forever()
