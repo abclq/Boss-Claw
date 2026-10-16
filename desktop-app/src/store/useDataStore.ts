@@ -15,6 +15,7 @@ import type {
 } from '@/lib/bossclaw/types';
 import { DEFAULT_STATS, DEFAULT_PROFILE, DEFAULT_PROFILE_DRAFT, DEFAULT_DIRECTION_PLAN, today } from '@/lib/bossclaw/defaults';
 import { cleanCompanyName } from '@/lib/bossclaw/jobDisplay';
+import { recordDelivery, wasDelivered } from '@/lib/bossclaw/deliveryLedger';
 
 /** 达标岗位本地缓存上限：最多保留最近 N 天（按日期分组）的达标岗位数据，超出自动清理更早几天的数据，防止 localStorage 撑爆。
  *  实测按每天约 460 个达标岗位、叠加图片简历+导入文件后，保留 7 天（≈3200 条）仍能把整 store 稳定在 5MB 配额约 60% 以内；90 天会随累计溢出。 */
@@ -178,10 +179,19 @@ export const useDataStore = create<DataState>()(
             (key && jobUrlKey(p.job) === key) || (jid && String(p.job?.jobId || '').trim().toLowerCase() === jid)
           );
           if (hit) return s;
+          // M7：已投递过的岗位（以只追加账本为准）不再入队——删除 pending 记录后重新采集到也不会重发
+          if (wasDelivered(item.job)) return s;
           return { pending: [item, ...s.pending] };
         }),
       updatePending: (id, patch) =>
-        set((s) => ({ pending: s.pending.map((p) => (p.id === id ? { ...p, ...patch } : p)) })),
+        set((s) => {
+          // M7：招呼语确认发出（sentAt 落地且状态为 sent）→ 登记进只追加的投递账本
+          if (patch?.status === 'sent' && Number(patch.sentAt) > 0) {
+            const target = s.pending.find((p) => p.id === id);
+            if (target) recordDelivery(target.job, Number(patch.sentAt));
+          }
+          return { pending: s.pending.map((p) => (p.id === id ? { ...p, ...patch } : p)) };
+        }),
       setPending: (items) => set({ pending: items }),
 
       upsertTaskRun: (run) =>

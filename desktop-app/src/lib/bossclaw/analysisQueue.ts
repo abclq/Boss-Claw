@@ -18,7 +18,7 @@ export interface AnalysisQueue {
   getStats(): AnalysisQueueStats;
   /** 订阅统计变化（注册时立刻回调一次当前值），返回取消订阅函数 */
   onChange(listener: (stats: AnalysisQueueStats) => void): () => void;
-  /** 停止接受新任务（已入队任务继续跑完） */
+  /** 停止接受新任务：已在执行的任务跑完，尚在排队的任务以 'analysis queue disposed' reject（不再悬挂） */
   dispose(): void;
 }
 
@@ -86,6 +86,9 @@ export function createAnalysisQueue(limit: number): AnalysisQueue {
     dispose() {
       disposed = true;
       listeners.clear();
+      // L9：旧实现 dispose 后 pump 直接 return，排队任务既不执行也不 reject，调用方的 await 永久悬挂
+      const dropped = pending.splice(0, pending.length);
+      for (const item of dropped) item.reject(new Error('analysis queue disposed'));
     },
   };
 }

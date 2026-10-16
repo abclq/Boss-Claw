@@ -27,9 +27,12 @@ import { platformEnabled, platformLabel, platformPriority, platformSupports } fr
 import { claimDelivery, isDeliveryClaimed, releaseDelivery } from '@/lib/bossclaw/deliveryLock';
 import { greetingKey, replyKey, ledgerBegin, ledgerSettle, ledgerForget } from '@/lib/bossclaw/sendLedger';
 import { detectContactInfo } from '@/lib/bossclaw/resumeDesensitize';
+import { isCompanyExcluded, companyDailyLimitHit } from '@/lib/bossclaw/companyFilter';
+import { wasDelivered } from '@/lib/bossclaw/deliveryLedger';
 import type { PendingItem, ImageResume, JobPlatform } from '@/lib/bossclaw/types';
 
-type ChatJobOutcome = 'success' | 'failed' | 'stop' | 'continue';
+// M10：'replied' = AI 跟聊回复已发出（不计入投递数 / 单轮上限 / 首条验收，只有招呼语 'success' 才计）
+type ChatJobOutcome = 'success' | 'replied' | 'failed' | 'stop' | 'continue';
 
 /** 从岗位元信息中提取纯 encryptJobId */
 function extractJobId(job: PendingItem['job']): string {
@@ -215,6 +218,28 @@ async function chatJob(item: PendingItem, run: EngineRun): Promise<ChatJobOutcom
     return 'failed';
   }
 
+  // M8：发送前按最新配置与投递账本复核（入队/分析时的判定可能已过时：
+  // 黑名单是之后才加的；同公司多个岗位同批入队时，入队那一刻今日已发数都是 0）
+  {
+    const bl = isCompanyExcluded(item.job, cfg);
+    if (bl.excluded) {
+      updatePending(item.id, { status: 'skipped', error: bl.reason, retryable: false });
+      addChatLog({ level: 'warn', stage: 'skip', jobId, jobTitle: title, company, msg: `⏭ 发送前复核：${bl.reason}` });
+      return 'continue';
+    }
+    if (wasDelivered(item.job)) {
+      updatePending(item.id, { status: 'skipped', error: '该岗位此前已投递过（投递账本），不重复发送', retryable: false });
+      addChatLog({ level: 'warn', stage: 'skip', jobId, jobTitle: title, company, msg: '⏭ 发送前复核：该岗位此前已投递过，不重复发送' });
+      return 'continue';
+    }
+    const cl = companyDailyLimitHit(item.job, cfg, useDataStore.getState().pending);
+    if (cl.limited) {
+      updatePending(item.id, { status: 'skipped', error: cl.reason, retryable: false });
+      addChatLog({ level: 'warn', stage: 'skip', jobId, jobTitle: title, company, msg: `⏭ 发送前复核：${cl.reason}` });
+      return 'continue';
+    }
+  }
+
   addChatLog({
     level: 'stage',
     stage: 'open_chat',
@@ -354,7 +379,15 @@ async function chatJob(item: PendingItem, run: EngineRun): Promise<ChatJobOutcom
         addChatLog({ level: 'error', stage: 'ai_reply', jobId, jobTitle: title, company, msg: reply.warning ? `🛡️ ${reply.warning}` : 'AI 回复生成失败，已暂停该条' });
         return 'failed';
       }
-      // H7 发送前硬过滤（纵深防御：generateReply 已过滤一次，这里对最终要发出的文本再查一次，含本地兜底文本）
+      // M10：只有 AI 真正生成且通过校验的回复才自动发送。AI 未配置 / 调用失败 / 校验未通过时
+      // generateReply 返回的是通用模板（method !== 'ai'），可能答非所问（面试邀约、拒信、索要材料），不自动发，转人工。
+      if (reply.method !== 'ai') {
+        const why = reply.warning || 'AI 未生成可用回复';
+        updatePending(item.id, { status: 'failed', error: `HR 已发来消息，${why}；已转人工回复，未自动发送通用模板`, retryable: false });
+        addChatLog({ level: 'warn', stage: 'ai_reply', jobId, jobTitle: title, company, msg: `🛡️ HR 已发来消息，${why}：不自动发送通用模板，请到浏览器人工回复`, errorDetail: hrMessage ? `HR 消息：${hrMessage.slice(0, 200)}` : '' });
+        return 'failed';
+      }
+      // H7 发送前硬过滤（纵深防御：generateReply 已过滤一次，这里对最终要发出的文本再查一次）
       const replyPii = detectContactInfo(reply.text);
       if (replyPii.length) {
         updatePending(item.id, { status: 'failed', error: `AI 回复含联系方式/链接（${replyPii.join('、')}），已拦截不发送，请人工回复`, retryable: false });
@@ -448,8 +481,8 @@ async function chatJob(item: PendingItem, run: EngineRun): Promise<ChatJobOutcom
           msg: '附件状态：已触发在线简历/图片简历打包同步',
         });
       }
-      addLog('success', `自动沟通成功：${title}`);
-      return 'success';
+      addLog('success', sentAsReply ? `AI 跟聊回复成功：${title}` : `自动沟通成功：${title}`);
+      return sentAsReply ? 'replied' : 'success';
     }
 
     const code = result.code ?? null;

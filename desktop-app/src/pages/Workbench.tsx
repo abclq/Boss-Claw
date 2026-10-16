@@ -29,6 +29,7 @@ import { analyzeJob, resolveQueueMinScore } from '@/lib/bossclaw/matching';
 import { fitLevelLabel } from '@/lib/bossclaw/fitLevel';
 import { isLocationExcluded } from '@/lib/bossclaw/locationFilter';
 import { isCompanyExcluded, companyDailyLimitHit } from '@/lib/bossclaw/companyFilter';
+import { wasDelivered } from '@/lib/bossclaw/deliveryLedger';
 import { isJdKeywordExcluded } from '@/lib/bossclaw/jdKeywordFilter';
 import { makePendingItem, jobUrlKey } from '@/store/useDataStore';
 import { checkBossLogin } from '@/lib/bossLogin';
@@ -2182,6 +2183,26 @@ export default function Workbench() {
     // 预检（冷却/每日上限）：不通过就别白开页面。
     // 岗位间隔节流不在这里等 —— 已挪到打开标签页之后，与页面加载并行（见各通道函数内）。
     if (!precheckDelivery()) return;
+
+    // M8：发送前按最新配置与投递账本复核黑名单 / 已投递 / 同公司单日上限（入队时的判定可能已过时）
+    {
+      const nowCfg = useSettingsStore.getState().config;
+      const bl = isCompanyExcluded(candidate.job, nowCfg);
+      const cl = companyDailyLimitHit(candidate.job, nowCfg, useDataStore.getState().pending);
+      const reason = bl.excluded
+        ? bl.reason
+        : wasDelivered(candidate.job)
+          ? '该岗位此前已投递过（投递账本），不重复发送'
+          : cl.limited ? cl.reason : '';
+      if (reason) {
+        updatePending(candidate.id, { status: 'skipped', error: reason, retryable: false });
+        addLog('warn', `发送前复核跳过「${candidate.job?.title || '岗位'}」：${reason}`);
+        setApplyStage(null);
+        recomputeStats();
+        if (useAppStore.getState().autoAssist) requestRunNext();
+        return;
+      }
+    }
 
     // 通道分派：非 BOSS → DOM 投递；BOSS 且优先隐身 → Camoufox；其余 → BOSS DOM。
     // 各通道内部自行 claim/release 投递锁（try/finally 保证配对），runNext 不再持有锁语义。

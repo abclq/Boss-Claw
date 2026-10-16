@@ -119,6 +119,32 @@ export const electronApi = {
     preloadPath: (): string => (api() as { webviewPreload?: string }).webviewPreload || '',
   },
 
+  // M6：LLM API Key 由主进程 safeStorage 加密保存；渲染层只拿掩码（••••末四位）
+  llmKey: {
+    set: async (apiKey: string, baseUrl: string): Promise<{ ok: boolean; masked?: string; error?: string }> => {
+      try {
+        const fn = api().llmKeySet;
+        if (!fn) return { ok: false, error: '仅桌面端支持保存 API Key' };
+        const r = await fn(apiKey, baseUrl);
+        return { ok: Boolean(r?.ok), masked: r?.masked, error: r?.error };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+    },
+    status: async (): Promise<{ configured: boolean; masked?: string; origin?: string } | null> => {
+      try {
+        const fn = api().llmKeyStatus;
+        if (!fn) return null;
+        return await fn();
+      } catch {
+        return null;
+      }
+    },
+    clear: async (): Promise<void> => {
+      try { await api().llmKeyClear?.(); } catch { /* ignore */ }
+    },
+  },
+
   // P05：LLM 主进程代理（主进程 Node fetch 转发，规避渲染层 CORS）
   llmProxy: async (
     url: string,

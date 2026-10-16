@@ -506,15 +506,31 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
     setBridgeLoading(false);
   };
 
+  // M6：API Key 输入只停留在本地草稿，失焦/测试时交主进程 safeStorage 加密保存，store 只存掩码
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const saveApiKeyDraft = async (): Promise<boolean> => {
+    const draft = apiKeyDraft.trim();
+    if (!draft) return true;
+    const r = await electronApi.llmKey.set(draft, config.model.baseUrl);
+    if (!r.ok || !r.masked) {
+      message.error('API Key 保存失败：' + (r.error || '未知错误'));
+      return false;
+    }
+    setModel({ apiKey: r.masked });
+    setApiKeyDraft('');
+    return true;
+  };
+
   const testConnection = async () => {
-    if (!isLLMConfigured()) {
+    if (!(await saveApiKeyDraft())) return;
+    if (!useSettingsStore.getState().isLLMConfigured()) {
       message.warning('请先填写 Base URL / API Key / 模型名');
       return;
     }
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await callModel([{ role: 'user', content: 'ping' }], config.model, { jsonMode: false, maxTokens: 128, temperature: 0 });
+      const r = await callModel([{ role: 'user', content: 'ping' }], useSettingsStore.getState().config.model, { jsonMode: false, maxTokens: 128, temperature: 0 });
       const msg = typeof r === 'string' ? r.slice(0, 60) : JSON.stringify(r).slice(0, 60);
       setTestResult({ ok: true, msg });
       message.success('LLM 连接成功！');
@@ -1662,9 +1678,10 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
               <span className="field-label">API Key</span>
               <div className="llm-keyrow">
                 <Input.Password
-                  value={config.model.apiKey}
-                  onChange={(e) => { setModel({ apiKey: e.target.value }); setTestResult(null); }}
-                  placeholder="sk-..."
+                  value={apiKeyDraft}
+                  onChange={(e) => { setApiKeyDraft(e.target.value); setTestResult(null); }}
+                  onBlur={() => { void saveApiKeyDraft(); }}
+                  placeholder={config.model.apiKey ? `已加密保存（${config.model.apiKey}），输入新 Key 可替换` : 'sk-...'}
                 />
                 <Button
                   type="primary"
@@ -1689,7 +1706,7 @@ export default function Settings({ isVisible = true }: { isVisible?: boolean }) 
             )}
 
             <Paragraph type="secondary" style={{ marginTop: 14, marginBottom: 0, fontSize: 13 }}>
-              🔒 API Key 仅加密保存在本机 localStorage，绝不会上传至第三方服务器。未配置时职业画像与岗位匹配将自动回退到本地规则初稿。
+              🔒 API Key 由系统加密存储（safeStorage）保存在本机，不进入备份与导出，并且只会发往保存时填写的服务地址；更换服务地址后需重新填写。未配置时职业画像与岗位匹配将自动回退到本地规则初稿。
             </Paragraph>
           </div>
 

@@ -101,14 +101,40 @@ function invalidateSkills(): void {
   loadPromise = null;
 }
 
+/** 从磁盘读取技能定义；IPC 不可用或列表为空时返回 null（调用方保持现状 / 内置兜底） */
+async function fetchSkillDefs(): Promise<LoadedSkill[] | null> {
+  try {
+    const list: any[] = (await window.electron?.skillsList?.()) || [];
+    const defs = await Promise.all(
+      list.map(async (s: any) => {
+        const body = String((await window.electron?.skillsRead?.(s.id))?.body || '');
+        return {
+          id: String(s.id || ''),
+          name: String(s.name || s.id || ''),
+          description: String(s.description || ''),
+          scope: (['profile', 'job-analysis', 'greetings', 'assistant'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
+          defaultEnabled: s.defaultEnabled !== false,
+          custom: Boolean(s.custom),
+          body,
+        } as LoadedSkill;
+      })
+    );
+    return defs.length ? defs : null;
+  } catch {
+    return null; // IPC 不可用：走内置兜底
+  }
+}
+
 /**
- * 每次 AI 调用前强制从磁盘重读技能文件：清空内存缓存后重新加载 SKILL.md。
+ * 每次 AI 调用前强制从磁盘重读技能文件。
  * 用途：用户/开发者改了 `skills/<id>/SKILL.md`（含 JD 拆解方法技能）后**无需重启应用即时生效**，
  * 也避免「文件已改但进程内仍是旧指令」导致的提示词与文档不一致。
+ * L8：先加载到临时变量，成功后原子替换——不再先把 loadedSkills 置空（并发分析在重载窗口内
+ * 会拿到内置兜底，提示词与缓存 key 抖动）。
  */
 export async function reloadSkills(): Promise<void> {
-  invalidateSkills();
-  await ensureSkillsLoaded();
+  const defs = await fetchSkillDefs();
+  if (defs) loadedSkills = defs;
 }
 
 /** 从磁盘加载 skills 目录下各 SKILL.md 定义（幂等；失败时保持内置兜底，不阻塞调用） */
@@ -116,26 +142,8 @@ export async function ensureSkillsLoaded(): Promise<void> {
   if (loadedSkills) return;
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
-    try {
-      const list: any[] = (await window.electron?.skillsList?.()) || [];
-      const defs = await Promise.all(
-        list.map(async (s: any) => {
-          const body = String((await window.electron?.skillsRead?.(s.id))?.body || '');
-          return {
-            id: String(s.id || ''),
-            name: String(s.name || s.id || ''),
-            description: String(s.description || ''),
-            scope: (['profile', 'job-analysis', 'greetings', 'assistant'].includes(s.scope) ? s.scope : 'assistant') as SkillScope,
-            defaultEnabled: s.defaultEnabled !== false,
-            custom: Boolean(s.custom),
-            body,
-          } as LoadedSkill;
-        })
-      );
-      if (defs.length) loadedSkills = defs;
-    } catch {
-      /* IPC 不可用：保持 null，走内置兜底 */
-    }
+    const defs = await fetchSkillDefs();
+    if (defs) loadedSkills = defs;
   })();
   try {
     await loadPromise;
@@ -267,11 +275,11 @@ export async function deleteCustomSkill(id: string): Promise<SkillOpResult> {
 export function skillInstructionsFor(scope: SkillScope): string {
   void ensureSkillsLoaded();
   const state = loadState();
-  const enabled = currentDefs().filter((s) => s.scope === scope && (state[s.id] ?? s.defaultEnabled));
+  // L8：正文为空（SKILL.md 读取失败或空文件）的技能不注入——否则只剩标题的空块会让调用方
+  // 以为已有技能指令，不再回落到默认细则（如 DEFAULT_JOB_ANALYSIS_INSTRUCTIONS）
+  const bodyOf = (s: LoadedSkill | BossSkill): string => String(('body' in s ? s.body : s.instructions) || '').trim();
+  const enabled = currentDefs().filter((s) => s.scope === scope && (state[s.id] ?? s.defaultEnabled) && bodyOf(s));
   if (!enabled.length) return '';
-  const blocks = enabled.map((s) => {
-    const body = 'body' in s ? s.body : s.instructions;
-    return `【AI 技能 · ${s.name}】（由软件 skills 层注入，必须遵守）\n${body}`;
-  });
+  const blocks = enabled.map((s) => `【AI 技能 · ${s.name}】（由软件 skills 层注入，必须遵守）\n${bodyOf(s)}`);
   return `\n\n${blocks.join('\n\n')}`;
 }

@@ -9,7 +9,7 @@ import { ensureSkillsLoaded } from './lib/bossclaw/skills';
 import { useInterval } from './lib/hooks';
 import { startScheduler } from './lib/scheduler';
 import { useScheduleStore } from './store/useScheduleStore';
-import { consumeLegacyBatchDelivery } from './store/useSettingsStore';
+import { consumeLegacyBatchDelivery, syncLlmKeyWithMain } from './store/useSettingsStore';
 import { restoreFromLocalBackup, startLocalBackup } from './lib/localBackup';
 import { syncTargetLocationsOnStart } from './lib/bossclaw/targetLocationSync';
 import Sidebar from './components/Sidebar';
@@ -175,6 +175,11 @@ export default function App() {
   useEffect(() => {
     const stopBackup = startLocalBackup();
     return () => stopBackup();
+  }, []);
+
+  // M6：API Key 改由主进程加密保存——启动时迁移旧版明文 Key，并把掩码与主进程状态对齐
+  useEffect(() => {
+    void syncLlmKeyWithMain();
   }, []);
 
   // 启动全局定时任务调度器（应用运行期间按设定时刻触发投递/采集/备份）

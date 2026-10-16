@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createSafePersistStorage } from '@/lib/persistSafe';
+import { electronApi } from '@/lib/electronApi';
+import { useRuntimeLogsStore } from '@/store/useRuntimeLogsStore';
 import type { AppConfig } from '@/lib/bossclaw/types';
 import { DEFAULT_CONFIG } from '@/lib/bossclaw/defaults';
 import { PROVIDER_DEFAULTS, type LLMProvider } from '@/lib/bossclaw/providerPresets';
@@ -105,3 +107,29 @@ export const getLLMConfig = (): LLMConfig & AppConfig['model'] => {
   const { model } = useSettingsStore.getState().config;
   return model;
 };
+
+// ===== M6：API Key 加密存储同步 =====
+// 真实 Key 只在主进程（safeStorage 加密落盘）；config.model.apiKey 只保存掩码（••••末四位），
+// 仅用于「是否已配置」判断与界面展示，主进程代理请求时忽略渲染层传入的值。
+export const LLM_KEY_MASK_PREFIX = '••••';
+export const isMaskedApiKey = (k: unknown): boolean => String(k || '').startsWith(LLM_KEY_MASK_PREFIX);
+
+/** 启动时调用：旧版明文 Key 迁移到主进程加密存储；掩码与主进程状态对齐（备份恢复/清空后不留假「已配置」）。 */
+export async function syncLlmKeyWithMain(): Promise<void> {
+  const st = await electronApi.llmKey.status();
+  if (!st) return; // 非 Electron 环境
+  const { model } = useSettingsStore.getState().config;
+  const cur = String(model.apiKey || '').trim();
+  if (cur && !isMaskedApiKey(cur)) {
+    const r = await electronApi.llmKey.set(cur, model.baseUrl);
+    useSettingsStore.getState().setModel({ apiKey: r.ok && r.masked ? r.masked : '' });
+    if (!r.ok) {
+      useRuntimeLogsStore
+        .getState()
+        .addLog('warn', `API Key 迁移到加密存储失败（${r.error || '未知原因'}），已从本地明文配置中移除，请在设置页重新填写。`);
+    }
+    return;
+  }
+  const masked = st.configured ? String(st.masked || '') : '';
+  if (cur !== masked) useSettingsStore.getState().setModel({ apiKey: masked });
+}

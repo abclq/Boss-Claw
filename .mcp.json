@@ -1,9 +1,9 @@
 {
   "mcpServers": {
     "bossclaw": {
-      "command": "E:\\Node.js\\node.exe",
+      "command": "node",
       "args": [
-        "F:\\projects\\Boss-claw\\mcp\\bossclaw-mcp\\bin\\bossclaw-mcp.mjs"
+        "mcp/bossclaw-mcp/bin/bossclaw-mcp.mjs"
       ],
       "env": {}
     }

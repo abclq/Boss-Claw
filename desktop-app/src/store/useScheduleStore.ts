@@ -56,6 +56,18 @@ interface ScheduleState {
   setCollectRequest: (r: CollectRequest | null) => void;
 }
 
+function mergeCollectRequest(prev: CollectRequest | null, next: CollectRequest | null): CollectRequest | null {
+  if (!next || !prev) return next; // 置空（消费）或无待处理请求：直接采用新值
+  const union = <T,>(a?: T[], b?: T[]): T[] | undefined =>
+    a?.length && b?.length ? Array.from(new Set([...a, ...b])) : undefined;
+  const merged: CollectRequest = {};
+  const platforms = union(prev.platforms, next.platforms);
+  if (platforms) merged.platforms = platforms;
+  const runIds = union(prev.runIds, next.runIds);
+  if (runIds) merged.runIds = runIds;
+  return merged;
+}
+
 function uid(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `sched_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -78,7 +90,9 @@ export const useScheduleStore = create<ScheduleState>()(
         set((s) => ({ entries: s.entries.map((x) => (x.id === id ? { ...x, enabled } : x)) })),
       markRun: (id, stamp) =>
         set((s) => ({ entries: s.entries.map((x) => (x.id === id ? { ...x, lastRunStamp: stamp } : x)) })),
-      setCollectRequest: (r) => set({ collectRequest: r }),
+      // L10：未消费的请求不再被直接覆盖（同一分钟两个采集任务只有后一个生效），而是合并：
+      // 平台取并集（任一方为空 = 全部已启用平台 → 合并结果也为全部）；定向 runIds 同理取并集。
+      setCollectRequest: (r) => set((s) => ({ collectRequest: mergeCollectRequest(s.collectRequest, r) })),
     }),
     { name: 'bossclaw-schedule', storage: createSafePersistStorage() }
   )

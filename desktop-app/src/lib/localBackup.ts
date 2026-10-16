@@ -17,7 +17,7 @@
 //   4) 心跳触发重收集前让出主线程（requestIdleCallback / setTimeout 兜底），不与用户交互撞车。
 import { electronApi } from './electronApi';
 import { persistDirtyEpoch, discardPendingPersistWrites } from './persistSafe';
-import { BACKUP_KEYS } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表，不再单独维护
+import { BACKUP_KEYS, stripSecrets } from './storage'; // P2-03：备份键清单收敛到 storage.ts 登记表，不再单独维护
 
 export const BACKUP_INTERVAL_MS = 300_000; // 5 分钟
 
@@ -51,7 +51,7 @@ export function gatherBundle(): BackupBundle {
   const keys: Record<string, string | null> = {};
   for (const k of BACKUP_KEYS) {
     try {
-      keys[k] = typeof localStorage !== 'undefined' ? localStorage.getItem(k) : null;
+      keys[k] = typeof localStorage !== 'undefined' ? stripSecrets(k, localStorage.getItem(k)) : null;
     } catch {
       keys[k] = null;
     }

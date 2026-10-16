@@ -594,6 +594,8 @@ function BrowserViewImpl({ defaultPlatform = 'boss', onNavigate, onJoinTask, onJ
       const url = String(evt?.url || '');
       try { event?.preventDefault?.(); } catch {}
       if (!url || !/^https?:\/\//i.test(url)) return;
+      // M5：弹窗目标同样受招聘平台白名单约束（之前任意 window.open 都会在当前 webview 打开）
+      if (!isWhitelistedUrl(url)) { confirmOpenExternal(url); return; }
       const activeId = activeIdRef.current || tabsRef.current[0]?.id || '';
       const target = (activeId && webviewEls.current[activeId]) || (activeId && webviewEls.current[tabsRef.current[0]?.id || '']) || el;
       try { target?.loadURL?.(url)?.catch?.(() => {}); } catch {}

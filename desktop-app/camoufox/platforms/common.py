@@ -11,6 +11,9 @@ BossClaw 隐身引擎 —— 平台公共基座（浏览器 / 人类化 / Cookie
   - load/save_cookies(platform) : 登录态按平台独立持久化 ~/.bossclaw/camoufox-cookies-{platform}.json
   - goto_stable    : 反爬空壳页自动重试导航
 """
+import base64
+import hashlib
+import hmac
 import json
 import os
 import random
@@ -77,6 +80,65 @@ def type_greeting_human(page, text: str, os_name: str | None = None):
 # ============================================================
 # Cookie 管理（按平台独立持久化）
 # ============================================================
+# M4：Cookie 文件加密落盘。数据密钥由 Electron 主进程生成并用 safeStorage（DPAPI / Keychain / libsecret）
+# 加密保存，启动引擎时经环境变量 BOSSCLAW_COOKIE_KEY（hex）传入，不进 argv。
+# 只用标准库：HMAC-SHA256 计数器模式生成密钥流 + encrypt-then-MAC（HMAC-SHA256 校验，防篡改）。
+_COOKIE_FMT = 'bossclaw-enc-v1'
+
+
+def _cookie_keys() -> "tuple[bytes, bytes] | None":
+    raw = os.environ.get('BOSSCLAW_COOKIE_KEY', '').strip()
+    try:
+        k = bytes.fromhex(raw)
+    except ValueError:
+        return None
+    if len(k) < 32:
+        return None
+    return (hmac.new(k, b'enc', hashlib.sha256).digest(), hmac.new(k, b'mac', hashlib.sha256).digest())
+
+
+def _keystream_xor(key: bytes, nonce: bytes, data: bytes) -> bytes:
+    out = bytearray(len(data))
+    for i in range(0, len(data), 32):
+        block = hmac.new(key, nonce + (i // 32).to_bytes(8, 'big'), hashlib.sha256).digest()
+        chunk = data[i:i + 32]
+        for j, b in enumerate(chunk):
+            out[i + j] = b ^ block[j]
+    return bytes(out)
+
+
+def _encrypt_blob(plain: bytes, keys) -> dict:
+    enc_key, mac_key = keys
+    nonce = os.urandom(16)
+    ct = _keystream_xor(enc_key, nonce, plain)
+    tag = hmac.new(mac_key, nonce + ct, hashlib.sha256).digest()
+    b64 = lambda x: base64.b64encode(x).decode('ascii')
+    return {"format": _COOKIE_FMT, "nonce": b64(nonce), "data": b64(ct), "tag": b64(tag)}
+
+
+def _decrypt_blob(obj: dict, keys) -> bytes:
+    enc_key, mac_key = keys
+    nonce = base64.b64decode(obj['nonce'])
+    ct = base64.b64decode(obj['data'])
+    tag = base64.b64decode(obj['tag'])
+    if not hmac.compare_digest(tag, hmac.new(mac_key, nonce + ct, hashlib.sha256).digest()):
+        raise ValueError('cookie file integrity check failed')
+    return _keystream_xor(enc_key, nonce, ct)
+
+
+def _write_private(path: Path, text: str):
+    """原子写入并收紧权限（POSIX 0600；Windows 上 chmod 只影响只读位，依赖用户目录 ACL + 加密）。"""
+    tmp = path.with_suffix(path.suffix + '.tmp')
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
 def load_cookies(platform: str = 'boss') -> list:
     f = cookie_file(platform)
     if not f.exists():
@@ -84,6 +146,12 @@ def load_cookies(platform: str = 'boss') -> list:
     try:
         with open(f, encoding='utf-8') as fh:
             auth = json.load(fh)
+        if isinstance(auth, dict) and auth.get('format') == _COOKIE_FMT:
+            keys = _cookie_keys()
+            if not keys:
+                log('⚠️', f'Cookie 文件已加密但缺少密钥（{platform}），需重新登录')
+                return []
+            auth = json.loads(_decrypt_blob(auth, keys).decode('utf-8'))
     except Exception as e:
         log('⚠️', f'读取 Cookie 失败（{platform}）：{e}')
         return []
@@ -120,28 +188,45 @@ def save_cookies(context, platform: str = 'boss') -> int:
             "secure": c.get("secure", False), "session": c.get("expires", -1) == -1,
         })
     f = cookie_file(platform)
+    payload = json.dumps({"cookies": export, "origins": []}, ensure_ascii=False)
+    keys = _cookie_keys()
+    if keys:
+        text = json.dumps(_encrypt_blob(payload.encode('utf-8'), keys))
+    else:
+        # 独立运行（无主进程下发密钥）时退回明文，但仍限制为 0600
+        log('⚠️', f'未提供 Cookie 加密密钥（{platform}），本次以明文 0600 保存')
+        text = payload
     if f.exists():
         try:
-            backup = f.parent / (f.stem + '.backup.json')
+            backup = _cookie_backup_file(f)
             shutil.copy(f, backup)
+            os.chmod(backup, 0o600)
         except Exception:
             pass
-    with open(f, 'w', encoding='utf-8') as fh:
-        json.dump({"cookies": export, "origins": []}, fh, ensure_ascii=False, indent=2)
-    log('💾', f'Cookie 已持久化（{platform}）：{len(export)} 条 → {f}')
+    _write_private(f, text)
+    log('💾', f'Cookie 已持久化（{platform}{"，已加密" if keys else ""}）：{len(export)} 条 → {f}')
     return len(export)
 
 
+def _cookie_backup_file(f: Path) -> Path:
+    return f.parent / (f.stem + '.backup.json')
+
+
 def clear_cookies(platform: str = 'boss') -> bool:
+    """退出登录：主文件与 .backup.json 一并删除（M4：旧实现只删主文件，登录态残留在备份里）。"""
     f = cookie_file(platform)
-    if f.exists():
-        try:
-            f.unlink()
-            log('🗑️', f'已清除 {platform} Cookie')
-            return True
-        except Exception:
-            return False
-    return False
+    removed = False
+    ok = True
+    for p in (f, _cookie_backup_file(f), f.with_suffix(f.suffix + '.tmp')):
+        if p.exists():
+            try:
+                p.unlink()
+                removed = True
+            except Exception:
+                ok = False
+    if removed:
+        log('🗑️', f'已清除 {platform} Cookie（含备份）')
+    return removed and ok
 
 
 # ============================================================

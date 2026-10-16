@@ -1767,9 +1767,9 @@ def engine_status(platform: str = 'boss') -> dict:
     logged_in = False
     if cf.exists():
         try:
-            with open(cf, encoding='utf-8') as f:
-                cookies = json.load(f).get('cookies', [])
-                cookie_count = len(cookies)
+            # M4：文件可能已加密，统一经 load_cookies 解密读取
+            cookies = load_cookies(platform)
+            cookie_count = len(cookies)
             # 登录态独立判定：仅按该平台鉴权 Cookie 命中（不靠匿名 cookie 数量，避免误判已登录）
             hints = PLATFORM_AUTH_COOKIE_HINTS.get(platform, PLATFORM_AUTH_COOKIE_HINTS['boss'])
             logged_in = any(

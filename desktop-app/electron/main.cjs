@@ -4,11 +4,12 @@
 // CloakBrowser 隐身引擎作为**可选**内置浏览器（用户设置切换；与 webview 平行运行）。
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, clipboard, dialog, nativeImage, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFile } = require('node:child_process');
 const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 // 本地控制桥（供外部 agent / MCP 操作运行中的应用；默认关闭，见 control-bridge.cjs 的开启条件）
 const { startControlBridge, resolveEnablement } = require('./control-bridge.cjs');
 
@@ -55,10 +56,39 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // ===== 统一 IPC 错误包装 =====
+// M2：IPC 发送方校验。主窗口专用通道只接受主窗口顶层 frame（打包后 file://，开发时 Vite dev server）；
+// webview guest、子 frame、其它窗口一律拒绝。guest 专用通道（jc:webview-input）单独用 isMainWindowGuest 校验。
+function isTrustedSender(event) {
+  try {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (event.sender !== mainWindow.webContents) return false;
+    const frame = event.senderFrame;
+    if (!frame || frame.parent) return false;
+    const url = String(frame.url || '');
+    if (url.startsWith('file://')) return true;
+    return isDev && (url === DEV_URL || url.startsWith(DEV_URL + '/'));
+  } catch {
+    return false;
+  }
+}
+function isMainWindowGuest(event) {
+  try {
+    const wc = event.sender;
+    if (!wc || wc.getType() !== 'webview') return false;
+    return Boolean(mainWindow && !mainWindow.isDestroyed() && wc.hostWebContents === mainWindow.webContents);
+  } catch {
+    return false;
+  }
+}
+
 function safeHandle(channel, handler) {
   // ipcMain.handle 抛出会让渲染进程 invoke reject；这里统一捕获并结构化返回
   // 保留 handler 自己的语义（返回 {ok, error, ...} 不会改；throw 会变成 reject）
   ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      dlog('warn', `ipc rejected (untrusted sender): ${channel}`);
+      throw new Error('untrusted ipc sender');
+    }
     try {
       return await handler(event, ...args);
     } catch (err) {
@@ -70,6 +100,10 @@ function safeHandle(channel, handler) {
 }
 function safeOn(channel, handler) {
   ipcMain.on(channel, async (event, ...args) => {
+    if (!isTrustedSender(event)) {
+      dlog('warn', `ipc rejected (untrusted sender): ${channel}`);
+      return;
+    }
     try {
       await handler(event, ...args);
     } catch (err) {
@@ -337,6 +371,34 @@ const CAMOUFOX_PORT = 18767;
 // H1：token 每次启动随机生成（旧值 'bossclaw-camoufox' 写死在开源仓库，任意网页/本机进程可伪造调用 /send /chat）。
 // 只经环境变量下发给子进程（不进 argv，避免被进程列表看到），请求时放 X-BossClaw-Token 头（不进 URL）。
 const CAMOUFOX_TOKEN = crypto.randomBytes(32).toString('hex');
+
+// M4：Camoufox Cookie 文件的数据密钥。首次生成 32 字节随机密钥，用 safeStorage 加密后存 userData；
+// safeStorage 不可用时返回 null（引擎退回 0600 明文并记录警告）。
+let cookieDataKeyCache;
+function getCookieDataKey() {
+  if (cookieDataKeyCache !== undefined) return cookieDataKeyCache;
+  cookieDataKeyCache = null;
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      dlog('warn', 'safeStorage unavailable: camoufox cookies will be stored unencrypted (0600)');
+      return null;
+    }
+    const f = path.join(app.getPath('userData'), 'cookie-key.bin');
+    if (fs.existsSync(f)) {
+      const hex = safeStorage.decryptString(fs.readFileSync(f));
+      if (/^[0-9a-f]{64}$/.test(hex)) cookieDataKeyCache = hex;
+    }
+    if (!cookieDataKeyCache) {
+      const hex = crypto.randomBytes(32).toString('hex');
+      fs.writeFileSync(f, safeStorage.encryptString(hex), { mode: 0o600 });
+      cookieDataKeyCache = hex;
+    }
+  } catch (e) {
+    dlog('warn', 'cookie data key unavailable', { message: e?.message });
+    cookieDataKeyCache = null;
+  }
+  return cookieDataKeyCache;
+}
 /** Camoufox 桥请求头：token + JSON（服务端强制校验 Content-Type / Host / 无 Origin） */
 const camoufoxHeaders = (json = false) => ({
   'X-BossClaw-Token': CAMOUFOX_TOKEN,
@@ -368,8 +430,13 @@ async function resetDataForVersion() {
     } catch (e) { dlog('warn', 'clear boss session storage failed', { message: e?.message }); }
     // 2) 清空 Camoufox 隐身引擎 cookie
     try {
-      const camCookie = path.join(app.getPath('home'), '.bossclaw', 'camoufox-cookies.json');
-      if (fs.existsSync(camCookie)) fs.unlinkSync(camCookie);
+      // M4：所有平台的 cookie 文件及其 .backup.json 一并删除
+      const camDir = path.join(app.getPath('home'), '.bossclaw');
+      if (fs.existsSync(camDir)) {
+        for (const name of fs.readdirSync(camDir)) {
+          if (/^camoufox-cookies.*\.json(\.tmp)?$/.test(name)) fs.unlinkSync(path.join(camDir, name));
+        }
+      }
     } catch (e) { dlog('warn', 'clear camoufox cookie failed', { message: e?.message }); }
     // 3) 清空 CloakBrowser 隐身浏览器持久 profile
     try {
@@ -495,6 +562,9 @@ function probeMissingDeps(python) {
   });
 }
 
+// M11：运行时自动安装的 Python 依赖锁定精确版本（与 camoufox/requirements.txt 保持一致）
+const PY_DEPS_PINNED = { playwright: 'playwright==1.60.0', camoufox: 'camoufox[geoip]==0.5.6' };
+
 // 后台真正安装依赖：优先装进程 playwright（Chromium 回退必需、体积小、快）；
 // camoufox 为可选增强（native 内核才需要），尽力安装，失败静默不阻塞。
 async function installCamoufoxDeps(python) {
@@ -512,20 +582,21 @@ async function installCamoufoxDeps(python) {
       target = python;
     }
   }
-  const pip = (pkg, idx) => runPythonAsync(target, ['-m', 'pip', 'install', '-q', '--upgrade', pkg], { timeout: 300000 })
+  // M11：只装锁定的精确版本（与 camoufox/requirements.txt 一致），不再 --upgrade 拉最新版
+  const pip = (pkg, idx) => runPythonAsync(target, ['-m', 'pip', 'install', '-q', pkg], { timeout: 300000 })
     .catch(async (e) => {
       if (idx < 2) {
         dlog('warn', `pip install ${pkg} retry with mirror`, { message: e?.message });
-        return runPythonAsync(target, ['-m', 'pip', 'install', '-q', '--upgrade', pkg,
+        return runPythonAsync(target, ['-m', 'pip', 'install', '-q', pkg,
           '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'], { timeout: 360000 });
       }
       throw e;
     });
   // 1) 核心：playwright（必须装好，否则回退/原生内核 import camoufox 都会失败并抛 No module named 'playwright'）
   //    camoufox 0.5.x 要求 playwright<1.61，须锁定兼容版本
-  try { await pip('playwright>=1.40,<1.61', 1); } catch (e) { dlog('error', 'playwright install failed', { message: e?.message }); throw e; }
+  try { await pip(PY_DEPS_PINNED.playwright, 1); } catch (e) { dlog('error', 'playwright install failed', { message: e?.message }); throw e; }
   // 2) 可选：camoufox[geoip]（原生内核 + GeoIP，优先用于登录/沟通；失败不影响 Chromium 回退）
-  try { await pip('camoufox[geoip]', 0); } catch (e) { dlog('info', 'camoufox install skipped (optional)', { message: e?.message }); }
+  try { await pip(PY_DEPS_PINNED.camoufox, 0); } catch (e) { dlog('info', 'camoufox install skipped (optional)', { message: e?.message }); }
   dlog('info', 'stealth deps ready', { target });
   return target;
 }
@@ -582,6 +653,10 @@ async function startCamoufoxBridge(pythonOverride) {
     // 防御性清理：若环境注入了 safe-delete shim（如部分沙箱/运行时），Python 的 shutil.rmtree
     // 会被拦截导致 camoufox fetch 等清理逻辑失败；spawn 时剥离该注入，不影响正常用户环境。
     const env = { ...process.env, BOSSCLAW_CAMOUFOX_TOKEN: CAMOUFOX_TOKEN };
+    // M4：Cookie 文件加密密钥（safeStorage 保护），仅经环境变量传给引擎子进程
+    const cookieKey = getCookieDataKey();
+    if (cookieKey) env.BOSSCLAW_COOKIE_KEY = cookieKey;
+    else delete env.BOSSCLAW_COOKIE_KEY;
     if (String(env.PYTHONPATH || '').includes('vendor/shim')) delete env.PYTHONPATH;
     camoufoxProcess = spawn(python, [server, '--port', String(CAMOUFOX_PORT)], {
       stdio: 'ignore',
@@ -684,7 +759,7 @@ safeHandle('jc:camoufox-status', async (_event, platform) => {
 });
 
 // 显式停止隐身引擎桥（设置页用）
-ipcMain.on('jc:camoufox-stop', () => stopCamoufoxBridge());
+safeOn('jc:camoufox-stop', () => stopCamoufoxBridge());
 
 // 重启隐身引擎桥：先停后拉，返回最终状态（自动沟通误触关闭后自愈用；
 // 多次重启失败由渲染层判定并自动停止自动沟通）
@@ -762,6 +837,22 @@ safeHandle('jc:camoufox-call', async (_event, action, payload) => {
   return data;
 });
 
+// M5：内置浏览器白名单（与 src/lib/bossclaw/browserWhitelist.ts 的 BROWSER_WHITELIST 保持同步）
+const WEBVIEW_WHITELIST_DOMAINS = [
+  'zhipin.com', 'liepin.com', 'zhaopin.com', '51job.com',
+  'chinahr.com', 'lagou.com', 'kanzhun.com', 'iguopin.com', 'ciiczhaopin.com', 'job1001.com', 'maimai.cn', 'linkedin.com',
+  'yingjiesheng.com', 'shixiseng.com', 'dajie.com',
+  '58.com', 'ganji.com', 'quanzhi.com', 'jianzhimao.com', 'doumi.com',
+];
+const WEBVIEW_PRELOAD_PATH = path.join(__dirname, 'preload', 'webview.cjs');
+function isWebviewUrlAllowed(url) {
+  let u;
+  try { u = new URL(String(url || '')); } catch { return false; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  const h = u.hostname.toLowerCase().replace(/\.$/, '');
+  return WEBVIEW_WHITELIST_DOMAINS.some((d) => h === d || h.endsWith('.' + d));
+}
+
 async function createMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.show();
@@ -784,10 +875,10 @@ async function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // sandbox:false 让 preload 能 require('node:path') 等 Node 内置模块；
-      // 否则 preload 崩溃，window.electron 不暴露，所有 IPC（含窗口控制按钮）失效。
-      // contextIsolation 仍为 true、nodeIntegration 仍为 false，渲染进程安全边界不变。
-      sandbox: false,
+      // L2：开启 sandbox。preload 原先只为拼 webview.cjs 的路径才 require('node:path')，
+      // 现改由主进程经 additionalArguments 传入 file:// URL，preload 不再需要 Node 内置模块。
+      sandbox: true,
+      additionalArguments: ['--bossclaw-webview-preload=' + pathToFileURL(WEBVIEW_PRELOAD_PATH).href],
       webviewTag: true,
       preload: path.join(__dirname, 'preload', 'app.cjs'),
       spellcheck: false,
@@ -867,6 +958,37 @@ async function createMainWindow() {
       });
     } catch {}
   }
+
+  // ===== M5：webview 安全约束（主进程兜底，渲染层白名单之外的最后防线）=====
+  // will-attach-webview：强制 preload / partition，剥离 node 集成类属性，初始 src 必须在白名单内。
+  // guest 主框架的页面内跳转（will-navigate）与服务端重定向（will-redirect）不得离开招聘平台白名单。
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    webPreferences.preload = WEBVIEW_PRELOAD_PATH;
+    delete webPreferences.preloadURL;
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.nodeIntegrationInWorker = false;
+    webPreferences.webviewTag = false;
+    params.partition = 'persist:bossclaw';
+    if (params.src && params.src !== 'about:blank' && !isWebviewUrlAllowed(params.src)) {
+      dlog('warn', 'webview attach blocked (src not whitelisted)', { src: String(params.src).slice(0, 200) });
+      event.preventDefault();
+    }
+  });
+  mainWindow.webContents.on('did-attach-webview', (_e, wc) => {
+    const guard = (ev, url, isMainFrame) => {
+      if (isMainFrame === false) return;
+      if (!isWebviewUrlAllowed(url)) {
+        dlog('warn', 'webview navigation blocked (not whitelisted)', { url: String(url || '').slice(0, 200) });
+        ev.preventDefault();
+      }
+    };
+    wc.on('will-navigate', (ev, url) => guard(ev, url, ev?.isMainFrame));
+    wc.on('will-redirect', (ev, url, _inPlace, legacyIsMainFrame) => {
+      const isMainFrame = typeof ev?.isMainFrame === 'boolean' ? ev.isMainFrame : legacyIsMainFrame;
+      guard(ev, url, isMainFrame);
+    });
+  });
 
   // ===== 内置浏览器右键菜单（常驻注册）=====
   // webview 默认无右键菜单；补齐常规项（后退/前进/刷新/复制/粘贴/全选）+
@@ -1032,7 +1154,7 @@ async function createMainWindow() {
 }
 
 // 前端请求打开外部链接
-ipcMain.on('jc:open-external', (_event, url) => {
+safeOn('jc:open-external', (_event, url) => {
   if (url && /^https?:\/\//.test(url)) shell.openExternal(url);
 });
 
@@ -1093,7 +1215,8 @@ safeHandle('jc:save-pdf', async (_event, defaultName, html) => {
     show: false,
     width: 842,
     height: 1191,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    // L4：与注释「无脚本」一致，真正禁用 JS（打印 HTML 由渲染层拼接，不需要脚本）
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false },
   });
   try {
     await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText));
@@ -1177,7 +1300,8 @@ safeHandle('jc:save-report-pdf', async (_event, defaultName, html) => {
     show: false,
     width: 1191,
     height: 842,
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    // L4：与注释「无脚本」一致，真正禁用 JS（打印 HTML 由渲染层拼接，不需要脚本）
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false },
   });
   try {
     await printWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlText));
@@ -1223,8 +1347,10 @@ safeHandle('jc:save-qualified-jobs', async (_event, defaultName, jsonText, dirOp
   if (!json) return { ok: false, error: '无有效达标岗位数据' };
   let filePath;
   const dir = String(dirOpt || '').trim();
-  if (dir && path.isAbsolute(dir)) {
-    filePath = path.join(dir, name);
+  // M3：免对话框直写只认「经目录选择框设置过」的导出目录，渲染层传入的其它路径一律回退到保存对话框
+  const savedDir = qualJobsDirCtl().readPointer();
+  if (dir && path.isAbsolute(dir) && savedDir && path.resolve(dir) === path.resolve(savedDir)) {
+    filePath = path.join(savedDir, name);
   } else {
     const res = await dialog.showSaveDialog(mainWindow, {
       title: '保存达标岗位数据',
@@ -1257,9 +1383,14 @@ safeHandle('jc:qualified-jobs-dir-get', async () => {
   catch (e) { return { dir: '', error: String((e && e.message) || e) }; }
 });
 
+// M3：目录类原语只认系统选择框本次会话返回过的目录（渲染层不能凭字符串把写入/备份重定向到任意位置）
+const pickedDirs = new Set();
+const isPickedDir = (dir) => pickedDirs.has(path.resolve(dir));
+
 safeHandle('jc:qualified-jobs-dir-set', async (_event, dirPath) => {
   const dir = String(dirPath || '').trim();
   if (!dir || !path.isAbsolute(dir)) return { ok: false, error: '导出目录须为绝对路径' };
+  if (!isPickedDir(dir)) return { ok: false, error: '请通过「选择目录」设置导出目录' };
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(qualJobsDirCtl().pointer(), dir);
@@ -1278,6 +1409,7 @@ safeHandle('jc:qualified-jobs-dir-pick', async () => {
     });
     if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
     const dir = filePaths[0];
+    pickedDirs.add(path.resolve(dir));
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(qualJobsDirCtl().pointer(), dir);
     return { ok: true, dir };
@@ -1291,6 +1423,24 @@ safeHandle('jc:qualified-jobs-dir-pick', async () => {
 // 因此用户在外部改了素材文件即时生效，应用内不保存任何素材内容副本。
 // 素材扩展名白名单（P4-10 双端共享口径：选择对话框 filters 与读取校验必须一致）
 const MATERIAL_EXT_WHITELIST = ['pdf', 'docx', 'md', 'markdown', 'txt', 'text'];
+// M3：material-read 只允许读 material-pick 返回过的路径。渲染层会跨重启保存素材路径，
+// 因此白名单持久化在 userData（只存路径，不存内容）。
+const materialAllowFile = () => path.join(app.getPath('userData'), '.material-allow.json');
+let materialAllow = null;
+function loadMaterialAllow() {
+  if (materialAllow) return materialAllow;
+  materialAllow = new Set();
+  try {
+    const arr = JSON.parse(fs.readFileSync(materialAllowFile(), 'utf8'));
+    if (Array.isArray(arr)) for (const p of arr) if (typeof p === 'string') materialAllow.add(p);
+  } catch {}
+  return materialAllow;
+}
+function addMaterialAllow(paths) {
+  const set = loadMaterialAllow();
+  for (const p of paths) set.add(path.resolve(p));
+  try { fs.writeFileSync(materialAllowFile(), JSON.stringify([...set]), { mode: 0o600 }); } catch (e) { dlog('warn', 'material allowlist save failed', { message: e?.message }); }
+}
 safeHandle('jc:material-pick', async () => {
   try {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
@@ -1302,6 +1452,7 @@ safeHandle('jc:material-pick', async () => {
       ],
     });
     if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+    addMaterialAllow(filePaths);
     return { ok: true, paths: filePaths.map((p) => ({ path: p, name: path.basename(p) })) };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -1313,6 +1464,7 @@ safeHandle('jc:material-read', async (_event, filePath) => {
   try {
     const p = String(filePath || '');
     if (!p || !path.isAbsolute(p)) return { ok: false, error: '文件路径无效（需绝对路径）' };
+    if (!loadMaterialAllow().has(path.resolve(p))) return { ok: false, error: '该文件未经「选择材料」授权，请重新选择' };
     const stat = await fs.promises.stat(p);
     if (!stat.isFile()) return { ok: false, error: '不是文件' };
     // 单文件上限 20MB：避免超大素材拖垮解析与内存
@@ -1375,7 +1527,13 @@ safeHandle('jc:backup-dir-get', async () => {
 
 safeHandle('jc:backup-dir-set', async (_event, dirPath) => {
   try {
-    return applyBackupDir(String(dirPath || '').trim());
+    const dir = String(dirPath || '').trim();
+    // M3：只接受默认目录或本次会话选择框返回过的目录
+    if (!dir || !path.isAbsolute(dir)) return { ok: false, error: '备份目录须为绝对路径' };
+    if (path.resolve(dir) !== path.resolve(backupCtl().defaultDir()) && !isPickedDir(dir)) {
+      return { ok: false, error: '请通过「选择目录」设置备份目录' };
+    }
+    return applyBackupDir(dir);
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
@@ -1389,6 +1547,7 @@ safeHandle('jc:backup-dir-pick', async () => {
       properties: ['openDirectory', 'createDirectory'],
     });
     if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true };
+    pickedDirs.add(path.resolve(filePaths[0]));
     return applyBackupDir(filePaths[0]);
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
@@ -1461,17 +1620,28 @@ safeHandle('jc:autostart-set', async (_event, enabled) => {
   }
 });
 
+const FETCH_URL_HOSTS = ['zhipin.com'];
+function isAllowedFetchUrl(target) {
+  let u;
+  try { u = new URL(target); } catch { return false; }
+  if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return false;
+  const host = u.hostname.toLowerCase();
+  return FETCH_URL_HOSTS.some((d) => host === d || host.endsWith('.' + d));
+}
+
 // 通用 URL 抓取（CORS 无关，供渲染进程获取 BOSS 公开接口，如城市编码表）。
 // 在主进程用 Node 原生 fetch 请求，避免渲染进程跨域限制。
 safeHandle('jc:fetch-url', async (_event, url) => {
   try {
     const target = String(url || '');
-    if (!/^https?:\/\//.test(target)) return { ok: false, error: 'invalid url' };
+    // M3：只允许 https 访问招聘平台公开域名（目前仅用于 BOSS 城市编码表），拒绝本机/私网与其它任意地址
+    if (!isAllowedFetchUrl(target)) return { ok: false, error: 'url not allowed' };
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 15000);
     try {
       const res = await fetch(target, {
         signal: ctrl.signal,
+        redirect: 'error',
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       });
       const text = await res.text();
@@ -1484,15 +1654,58 @@ safeHandle('jc:fetch-url', async (_event, url) => {
   }
 });
 
+// M6：LLM API Key 由主进程用 safeStorage 加密落盘（userData/llm-key.json），渲染层只拿掩码。
+// Key 与保存时的服务地址 origin 绑定：jc:llm-proxy 只向该 origin 发请求并由主进程注入 Key，
+// 渲染层既读不到 Key，也不能把 Key 或请求转发到任意地址（M3）。
+const llmKeyFile = () => path.join(app.getPath('userData'), 'llm-key.json');
+const maskApiKey = (k) => '••••' + String(k).slice(-4);
+function originOf(u) {
+  try {
+    const x = new URL(String(u || ''));
+    if (x.protocol !== 'https:' && x.protocol !== 'http:') return '';
+    return x.origin;
+  } catch { return ''; }
+}
+function readLlmKey() {
+  try {
+    const rec = JSON.parse(fs.readFileSync(llmKeyFile(), 'utf8'));
+    if (!rec || !rec.enc || !rec.origin) return null;
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const key = safeStorage.decryptString(Buffer.from(rec.enc, 'base64'));
+    return key ? { key, origin: rec.origin } : null;
+  } catch { return null; }
+}
+safeHandle('jc:llm-key-set', async (_event, apiKey, baseUrl) => {
+  const key = String(apiKey || '').trim();
+  const origin = originOf(baseUrl);
+  if (!key) return { ok: false, error: 'API Key 为空' };
+  if (!origin) return { ok: false, error: '请先填写有效的 Base URL' };
+  if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: '当前系统不支持加密存储（safeStorage 不可用），无法保存 API Key' };
+  const enc = safeStorage.encryptString(key).toString('base64');
+  await fs.promises.writeFile(llmKeyFile(), JSON.stringify({ enc, origin }), { mode: 0o600 });
+  return { ok: true, masked: maskApiKey(key), origin };
+});
+safeHandle('jc:llm-key-status', async () => {
+  const rec = readLlmKey();
+  return rec ? { configured: true, masked: maskApiKey(rec.key), origin: rec.origin } : { configured: false };
+});
+safeHandle('jc:llm-key-clear', async () => {
+  try { await fs.promises.unlink(llmKeyFile()); } catch {}
+  return { ok: true };
+});
+
 // P05：LLM 主进程代理（对齐 AGENTS.md「LLM 经预加载脚本代理真实请求」架构约定）。
 // 渲染层不再直连 provider（规避部分端点 CORS 失败、统一主进程超时/错误口径），经此转发。
-// 信任面同 jc:fetch-url（本地工具、URL 由渲染层自身配置的 provider 端点提供）。
-safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 90000) => {
+// M3/M6：渲染层传入的 apiKey 参数被忽略，Key 由主进程注入；目标 URL 必须与 Key 绑定的 origin 一致。
+safeHandle('jc:llm-proxy', async (_event, url, payload, _ignoredApiKey, timeoutMs = 90000) => {
   const target = String(url || '');
   if (!/^https?:\/\//.test(target)) return { ok: false, status: 0, text: '', error: 'invalid url' };
-  // P1-11：apiKey 从网页复制常带尾部空格/换行，trim 后再拼 Authorization 头，
-  // 否则 fetch 会抛 `TypeError: Invalid value` 且被下面 catch 吞成模糊的失败信息。
-  const key = String(apiKey || '').trim();
+  const rec = readLlmKey();
+  if (!rec) return { ok: false, status: 0, text: '', error: '未配置 API Key（请在设置页重新填写）' };
+  if (originOf(target) !== rec.origin) {
+    return { ok: false, status: 0, text: '', error: 'API Key 与当前服务地址不匹配，请在设置页重新填写 API Key' };
+  }
+  const key = rec.key;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.max(1000, Number(timeoutMs) || 90000));
   try {
@@ -1523,16 +1736,16 @@ safeHandle('jc:llm-proxy', async (_event, url, payload, apiKey, timeoutMs = 9000
 });
 
 // 窗口控制（frame:false 自绘标题栏按钮用）
-ipcMain.on('jc:window-minimize', () => mainWindow?.minimize());
-ipcMain.on('jc:window-maximize', () => {
+safeOn('jc:window-minimize', () => mainWindow?.minimize());
+safeOn('jc:window-maximize', () => {
   if (!mainWindow) return;
   mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
 });
-ipcMain.on('jc:window-close', () => mainWindow?.close());
-ipcMain.handle('jc:window-is-maximized', () => mainWindow?.isMaximized() ?? false);
+safeOn('jc:window-close', () => mainWindow?.close());
+safeHandle('jc:window-is-maximized', () => mainWindow?.isMaximized() ?? false);
 // 窗口置顶（标题栏图钉按钮）：查询当前置顶状态 / 切换
-ipcMain.handle('jc:window-always-on-top', () => mainWindow?.isAlwaysOnTop() ?? false);
-ipcMain.on('jc:window-always-on-top-set', (_event, value) => mainWindow?.setAlwaysOnTop(Boolean(value)));
+safeHandle('jc:window-always-on-top', () => mainWindow?.isAlwaysOnTop() ?? false);
+safeOn('jc:window-always-on-top-set', (_event, value) => mainWindow?.setAlwaysOnTop(Boolean(value)));
 
 // 检查 BOSS 直聘登录态：以 webview 持久化会话（persist:bossclaw）中的 wt2 主会话 cookie 为准。
 // wt2 是 zhipin.com 的登录主 cookie，未登录时不存在；过期 cookie 不会由 Electron 返回。
@@ -1606,6 +1819,8 @@ safeHandle('jc:boss-logout', async (_event, platform) => {
 // Electron <webview> 无 CDP，等价物是 webContents.insertText()/selectAll()/delete()/sendInputEvent()。
 // 由 webview preload（webview.cjs）直接 ipcRenderer.send 到本主进程，event.sender 即 guest webContents。
 ipcMain.on('jc:webview-input', (event, payload) => {
+  // M2：只接受挂在主窗口里的 webview guest
+  if (!isMainWindowGuest(event)) { dlog('warn', 'webview-input rejected (not a main-window guest)'); return; }
   const wc = event.sender;
   // P4-12：主进程侧频率兜底（渲染层自律之外的最后防线）。
   // 阈值 = 16 次/分钟（渲染层 ActionPacer 正常 8 次/分钟，留 2 倍余量：
@@ -1666,7 +1881,7 @@ ipcMain.on('jc:webview-input', (event, payload) => {
 });
 
 // 前端请求启动/停止/暂停桥接
-ipcMain.on('jc:bridge-control', (_event, type) => {
+safeOn('jc:bridge-control', (_event, type) => {
   if (type === 'start' && !bridgeProcess) startBridge();
   if (type === 'stop' && bridgeProcess) { try { bridgeProcess.kill(); } catch {} bridgeProcess = null; }
 });

@@ -11,6 +11,7 @@
 
 import type { AppConfig, JobPlatform, PendingItem } from './types';
 import { PLATFORM_IDS, platformDailyCap, platformEnabled } from './platforms';
+import { deliveryRecords, syncDeliveriesFrom } from './deliveryLedger';
 
 // ===== 风险严重级别 =====
 export type RiskSeverity = 'login' | 'rate_limited' | 'challenge' | 'env' | 'banned';
@@ -169,16 +170,19 @@ function isSameDay(ts: number | null | undefined, now = Date.now()): boolean {
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
 }
 
-/** 今日已成功投递数量（以 sentAt 为准） */
+/**
+ * 今日已成功投递数量（以 sentAt 为准）。
+ * M7：以只追加的投递账本为准——pending 里的已发记录先补登进账本，删除 pending 不会「退回」额度。
+ */
 export function dailySentCount(pending: PendingItem[], now = Date.now()): number {
-  return (pending || []).filter((p) => p.status === 'sent' && isSameDay(p.sentAt, now)).length;
+  syncDeliveriesFrom(pending);
+  return deliveryRecords().filter((r) => isSameDay(r.sentAt, now)).length;
 }
 
-/** 今日某平台已成功投递数量（多平台适配：按 job.platform 分组，缺省视为 boss） */
+/** 今日某平台已成功投递数量（多平台适配：按 job.platform 分组，缺省视为 boss；口径同上，以账本为准） */
 export function dailySentCountFor(pending: PendingItem[], platform: JobPlatform, now = Date.now()): number {
-  return (pending || []).filter(
-    (p) => p.status === 'sent' && isSameDay(p.sentAt, now) && ((p.job?.platform ?? 'boss') === platform),
-  ).length;
+  syncDeliveriesFrom(pending);
+  return deliveryRecords().filter((r) => isSameDay(r.sentAt, now) && (r.platform || 'boss') === platform).length;
 }
 
 /** 某平台配置的每日投递目标（多平台独立配额；0 表示不设限，仍受平台侧上限/MAX_SAFE_DAILY 收窄） */

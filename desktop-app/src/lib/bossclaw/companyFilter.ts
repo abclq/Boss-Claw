@@ -8,6 +8,7 @@
 // - 招聘方姓名做「单向子串匹配」：黑名单「王老师」命中「王老师（HR）」等带后缀展示。
 // 均忽略空白与大小写差异。
 import type { AppConfig } from './types';
+import { deliveryRecords, syncDeliveriesFrom } from './deliveryLedger';
 
 const normalize = (v: string) => String(v || '').replace(/\s+/g, '').toLowerCase();
 
@@ -101,12 +102,13 @@ export function countCompanyDeliveredToday(
   const target = normalize(String(company || ''));
   if (!target) return 0;
   const dayStart = startOfLocalDay(now);
+  // M7：以只追加的投递账本为准（传入列表中的已发记录先补登），删除 pending 不影响计数
+  syncDeliveriesFrom(delivered as Parameters<typeof syncDeliveriesFrom>[0]);
   let n = 0;
-  for (const item of delivered || []) {
-    if (item?.status !== 'sent') continue;
-    const sentAt = Number(item?.sentAt || 0);
-    if (!sentAt || sentAt < dayStart) continue;
-    const c = normalize(String(item?.job?.company || ''));
+  for (const rec of deliveryRecords()) {
+    const sentAt = Number(rec.sentAt || 0);
+    if (!sentAt || sentAt < dayStart || sentAt > now + 60_000) continue;
+    const c = normalize(String(rec.company || ''));
     if (!c) continue;
     // 双向子串：任一向包含即视为同一家公司
     if (c.includes(target) || target.includes(c)) n += 1;

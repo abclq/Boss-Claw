@@ -13,6 +13,12 @@
 
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
+
+// L1：事件通道 nonce（每进程随机）。注入脚本里以闭包常量持有，页面自身 JS 拿不到，
+// 因此页面里任意 console.log('__bossclaw_emit__…') 伪造的事件会被 launcher 丢弃。
+const EMIT_NONCE = crypto.randomBytes(16).toString('hex');
+const EMIT_MARKER = '__bossclaw_emit__' + EMIT_NONCE + ':';
 
 let mod = null; // dynamic import cache: { launchPersistentContext, launch, binaryInfo, ensureBinary, ... }
 
@@ -198,7 +204,7 @@ async function newPage(tabId, url) {
     const preloadPath = path.join(__dirname, 'cloakPreload.cjs');
     if (fs.existsSync(preloadPath)) {
       // addInitScript 支持 file / function 形式的注入
-      const code = fs.readFileSync(preloadPath, 'utf8');
+      const code = fs.readFileSync(preloadPath, 'utf8').split('__BOSSCLAW_EMIT_NONCE__').join(EMIT_NONCE);
       await page.addInitScript({ content: code });
     }
     const targetUrl = (url && /^https?:\/\//.test(url)) ? url : 'https://www.zhipin.com';
@@ -233,10 +239,9 @@ async function newPage(tabId, url) {
     const onConsole = async (msg) => {
       try {
         const text = msg.text();
-        const marker = '__bossclaw_emit__';
-        const idx = text.indexOf(marker);
-        if (idx < 0) return;
-        const json = text.slice(idx + marker.length).trim();
+        // L1：只接受以带 nonce 的标记开头的消息
+        if (!text.startsWith(EMIT_MARKER)) return;
+        const json = text.slice(EMIT_MARKER.length).trim();
         const data = JSON.parse(json);
         if (data && data.channel) {
           _emit({ tabId, channel: data.channel, payload: data.payload || {} });

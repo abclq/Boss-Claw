@@ -2,16 +2,22 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-const path = require('node:path');
-const { pathToFileURL } = require('node:url');
 
-// P4-09：IPC 通道命名断言（桥接层逃生口 invoke/send/on 用）。
-// 本项目对外通道统一 `jc:` 前缀，与 main.cjs 的 safeHandle / ipcMain 注册面对应；
-// 逃生口保留是为了兼容历史桥接调用，但通道名不合规（拼写错 / 漏前缀）会在控制台给出警告，
-// 避免「通道是否受支持」只能靠全仓库 grep 推断。仅工程可维护性断言，不做访问控制。
-const assertIpcChannel = (method, channel) => {
-  if (typeof channel !== 'string' || !/^jc:/.test(channel)) {
-    console.warn(`[preload/app] 非约定前缀 IPC 通道 ${method}('${String(channel)}') —— 通道须以 jc: 开头并在 main.cjs 注册`);
+// L2：主窗口已开启 sandbox，sandbox 下的 preload 不能 require Node 内置模块（node:path / node:url）。
+// webview preload 的 file:// URL 改由主进程经 additionalArguments 传入。
+const WEBVIEW_PRELOAD_ARG = '--bossclaw-webview-preload=';
+const webviewPreloadUrl = (() => {
+  const hit = (process.argv || []).find((a) => typeof a === 'string' && a.startsWith(WEBVIEW_PRELOAD_ARG));
+  return hit ? hit.slice(WEBVIEW_PRELOAD_ARG.length) : '';
+})();
+
+// M2：通用 invoke/on 逃生口改为显式白名单（只放行渲染层实际用到的通道），send 不再开放。
+// 主进程侧另有 isTrustedSender 校验发送方。
+const GENERIC_INVOKE_CHANNELS = new Set(['jc:clipboard-write']);
+const GENERIC_ON_CHANNELS = new Set(['jc:webview-open-link', 'jc:webview-source']);
+const assertIpcChannel = (method, channel, allowed) => {
+  if (typeof channel !== 'string' || !allowed.has(channel)) {
+    throw new Error(`[preload/app] IPC 通道不在白名单：${method}('${String(channel)}')`);
   }
   return channel;
 };
@@ -61,7 +67,7 @@ const api = {
 
   // 内置浏览器 webview 预加载脚本绝对路径（由 BrowserView 组件读取后设置到 <webview>）
   // 注意：webview 标签的 preload 属性协议必须是 file:（Electron 文档硬性要求，反斜杠绝对路径会被拒绝加载）
-  webviewPreload: pathToFileURL(path.join(__dirname, 'webview.cjs')).href,
+  webviewPreload: webviewPreloadUrl,
 
   // CORS 无关的 URL 抓取（主进程转发，供获取 BOSS 公开接口如城市编码表）
   fetchUrl: (url) => ipcRenderer.invoke('jc:fetch-url', url),
@@ -71,6 +77,10 @@ const api = {
 
   // LLM 主进程代理（P05）：渲染层经此转发 OpenAI 兼容请求，规避渲染层 CORS，超时/错误到主进程统一处理
   llmProxy: (url, payload, apiKey, timeoutMs) => ipcRenderer.invoke('jc:llm-proxy', url, payload, apiKey, timeoutMs),
+  // M6：API Key 交主进程 safeStorage 加密保存，渲染层只拿掩码
+  llmKeySet: (apiKey, baseUrl) => ipcRenderer.invoke('jc:llm-key-set', apiKey, baseUrl),
+  llmKeyStatus: () => ipcRenderer.invoke('jc:llm-key-status'),
+  llmKeyClear: () => ipcRenderer.invoke('jc:llm-key-clear'),
 
   // ===== 开机自启动（Windows 登录项）=====
   autostartGet: () => ipcRenderer.invoke('jc:autostart-get'),
@@ -165,18 +175,16 @@ const api = {
     return () => ipcRenderer.removeListener('jc:cloak-status-changed', listener);
   },
 
-  // 通用 IPC 调用（桥接 / LLM 代理等后续阶段使用）
-  // @deprecated 仅桥接层遗留使用（P4-09），新代码请用具名方法（上方各具名通道均以 jc: 前缀规范命名）
+  // 通用 IPC 调用：仅白名单通道（M2）
   invoke: (channel, ...args) => {
-    assertIpcChannel('invoke', channel);
+    assertIpcChannel('invoke', channel, GENERIC_INVOKE_CHANNELS);
     return ipcRenderer.invoke(channel, ...args);
   },
-  send: (channel, ...args) => {
-    assertIpcChannel('send', channel);
-    return ipcRenderer.send(channel, ...args);
+  send: (channel) => {
+    throw new Error(`[preload/app] 通用 send 已关闭：send('${String(channel)}')`);
   },
   on: (channel, callback) => {
-    assertIpcChannel('on', channel);
+    assertIpcChannel('on', channel, GENERIC_ON_CHANNELS);
     const listener = (_event, ...args) => callback(...args);
     ipcRenderer.on(channel, listener);
     return () => ipcRenderer.removeListener(channel, listener);

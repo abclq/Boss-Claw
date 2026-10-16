@@ -12,6 +12,9 @@ interface ElectronBridgeApi {
   webviewPreload?: string;
   // OpenClaw 本地桥接代理（主进程持 token；route ∈ /status /logs /report /command /ocr /resume-text）
   bridgeCall?: (route: string, method?: 'GET' | 'POST', body?: unknown, timeoutMs?: number) => Promise<any>;
+  llmKeySet?: (apiKey: string, baseUrl: string) => Promise<{ ok: boolean; masked?: string; origin?: string; error?: string }>;
+  llmKeyStatus?: () => Promise<{ configured: boolean; masked?: string; origin?: string }>;
+  llmKeyClear?: () => Promise<{ ok: boolean }>;
   invoke?: (channel: string, ...args: unknown[]) => Promise<unknown>;
   send?: (channel: string, ...args: unknown[]) => void;
   on?: (channel: string, callback: (...args: unknown[]) => void) => () => void;

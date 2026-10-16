@@ -31,12 +31,15 @@
   // 渲染层 / launcher → Page：window.__bossclaw_dispatch(channel, payload)
   // Page → launcher / 渲染层：console.log('__bossclaw_emit__', JSON.stringify({channel,payload}))
   const channelHandlers = new Map();
+  // L1：nonce 由 launcher 注入时替换占位符，只存在于本闭包；console.log 在页面脚本运行前取原生引用，
+  // 页面后续改写 console 也截获不到 nonce。emit 不再挂到 window 上（之前任何页面 JS 都能直接调用伪造事件）。
+  const EMIT_MARKER = '__bossclaw_emit__' + '__BOSSCLAW_EMIT_NONCE__' + ':';
+  const nativeLog = console.log.bind(console);
   function emit(channel, payload) {
     try {
-      console.log('__bossclaw_emit__' + JSON.stringify({ channel, payload: payload || {} }));
+      nativeLog(EMIT_MARKER + JSON.stringify({ channel, payload: payload || {} }));
     } catch (e) { /* ignore */ }
   }
-  window.__bossclaw_emit = emit;
   window.__bossclaw_dispatch = function (channel, payload) {
     const list = channelHandlers.get(channel);
     if (!list) return false;

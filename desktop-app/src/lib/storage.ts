@@ -4,6 +4,7 @@
 //   - bossclaw-settings-v2 ← useSettingsStore（v2 含字段迁移，新老数据自动合并）
 //   - bossclaw-data      ← useDataStore
 import { discardPendingPersistWrites } from './persistSafe';
+import { electronApi } from './electronApi';
 
 // ===== 存储键登记表（P2-03：单一事实来源）=====
 // 曾被三处重复维护（storage.ts BOSS_CLAW_KEYS / localBackup BACKUP_KEYS / clearAllData 硬编码），
@@ -43,6 +44,9 @@ export const STORAGE_KEYS: StorageKeySpec[] = [
   // 发送幂等账本（H5）：按 平台+jobId+内容指纹 记录发送尝试，防止重启/超时后重复发送。
   // 独立于 pending（删记录不会遗忘），不导出不备份；「清空全部」时随业务数据清除
   { key: 'bossclaw-send-ledger-v1', export: false, backup: false, clear: true },
+  // 投递账本（M7）：只追加的已投递记录（平台+岗位+公司+时间），每日上限/同公司上限/入队去重以此为准，
+  // 删除 pending 不影响。纳入本地备份（恢复后额度与去重不丢），不导出；「清空全部」时清除
+  { key: 'bossclaw-delivery-ledger-v1', export: false, backup: true, clear: true },
 ] as const;
 
 export const keysWhere = (pred: (s: StorageKeySpec) => boolean): string[] =>
@@ -56,11 +60,25 @@ export const BACKUP_KEYS = keysWhere((s) => s.backup);
 /** 同时识别老 key（v1 历史版本），仅导出、不参与导入，避免误删后无法恢复 */
 const LEGACY_KEYS = ['bossclaw-settings'] as const;
 
+// M6：导出/备份时剔除 LLM API Key（含旧版明文残留与掩码），Key 只存在主进程加密存储里
+const SETTINGS_KEYS_WITH_SECRET = new Set(['bossclaw-settings-v2', 'bossclaw-settings']);
+export function stripSecrets(key: string, raw: string | null): string | null {
+  if (raw == null || !SETTINGS_KEYS_WITH_SECRET.has(key)) return raw;
+  try {
+    const obj = JSON.parse(raw);
+    const model = obj?.state?.config?.model;
+    if (model && typeof model === 'object' && 'apiKey' in model) model.apiKey = '';
+    return JSON.stringify(obj);
+  } catch {
+    return null; // 解析失败宁可不导出该键，也不把可能含 Key 的原文写出去
+  }
+}
+
 export function exportData(): string {
   const data: Record<string, string | null> = {};
-  for (const k of EXPORT_KEYS) data[k] = localStorage.getItem(k);
+  for (const k of EXPORT_KEYS) data[k] = stripSecrets(k, localStorage.getItem(k));
   for (const k of LEGACY_KEYS) {
-    if (localStorage.getItem(k) != null) data[`__legacy__${k}`] = localStorage.getItem(k);
+    if (localStorage.getItem(k) != null) data[`__legacy__${k}`] = stripSecrets(k, localStorage.getItem(k));
   }
   return JSON.stringify(data, null, 2);
 }
@@ -90,4 +108,6 @@ export function clearAllData(): void {
   for (const k of keysWhere((s) => s.clear)) localStorage.removeItem(k);
   // 旧版本遗留键也一并清理（如有），防止 reset 失败导致旧数据复活
   for (const k of LEGACY_KEYS) localStorage.removeItem(k);
+  // M6：加密保存在主进程的 API Key 一并清除
+  void electronApi.llmKey.clear();
 }
